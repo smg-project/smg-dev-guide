@@ -134,7 +134,7 @@ registry.register_pattern("my-model", "mymodel");
 registry.register_pattern("mymodel-v2", "mymodel");
 ```
 
-Patterns are matched **case-insensitive substring**: `model_id.to_lowercase().contains(pattern)` (factory.rs `find_pooled_parser_for_model`). First match wins; order more specific patterns before broader ones.
+Patterns are matched **case-insensitive substring**: `model_id.to_lowercase().contains(pattern)` (factory.rs `create_for_model`; `has_parser_for_model` does the same check without building the parser). First match wins; order more specific patterns before broader ones.
 
 **Verify:** `cargo test -p reasoning-parser`
 
@@ -147,7 +147,7 @@ Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings -> commit.
 ## Critical Rules
 
 - Compose `BaseReasoningParser`; delegate all seven trait methods to `self.base`. It already solves partial tokens, buffer overflow, and start/end stripping.
-- For a model whose template injects the start token in the prefill (output starts mid-reasoning), set `always_in_reasoning: true` — that is the entire customization (see `parsers/minimax.rs`). No `is_first_chunk` field or method overrides.
+- For a model whose template injects the start token in the prefill (output starts mid-reasoning), set `always_in_reasoning: true` — that is the entire customization (file-based examples: `parsers/minimax.rs` `MiniMaxParser`, and `parsers/qwen3.rs` `QwenThinkingParser`, factory key `qwen3_thinking`). No `is_first_chunk` field or method overrides.
 - `BaseReasoningParser::new` seeds `in_reasoning` from `always_in_reasoning`, and `reset()` restores it — so `is_in_reasoning()` equals the flag on a fresh or reset parser.
 - A new model only needs its own file when it has distinct tokens or behavior. Models reusing standard `<think>`/`</think>` can be a config-only `BaseReasoningParser::new(config).with_model_type(...)` registered inline in the factory (see `deepseek_v31`, `kimi_k25`, `kimi_thinking`) — no file in `parsers/`.
 - `ParserResult` has exactly two fields: `reasoning_text` and `normal_text`.

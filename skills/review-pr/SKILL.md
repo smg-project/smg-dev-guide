@@ -44,7 +44,7 @@ Do NOT write review comments, approve, or provide feedback until you have:
 | `model_gateway/src/service_discovery.rs` | 3 (Worker Lifecycle) |
 | `model_gateway/src/worker/`, `model_gateway/src/workflow/steps/local/` | 3 (Worker Lifecycle) |
 | `model_gateway/src/policies/` | 4 (Routing Policy) |
-| `model_gateway/src/routers/` (incl. `anthropic/`, `gemini/`) | 1 (Layering), 4 (Routing Policy) |
+| `model_gateway/src/routers/` (incl. `anthropic/`, `gemini/`, `responses/`, `conversations/`, `grpc/`) | 1 (Layering), 4 (Routing Policy) |
 | `model_gateway/src/middleware/` (scheduler, tenant_resolution, rate limit) | 1 (Layering), 10 (Architecture) — no dedicated section yet |
 | `crates/tool_parser/src/` | 5 (Parser Changes) |
 | `crates/reasoning_parser/src/` | 5 (Parser Changes) |

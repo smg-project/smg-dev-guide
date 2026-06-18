@@ -18,7 +18,7 @@ It is **off by default**: `priority_scheduler_enabled = false` keeps the legacy 
 
 ### Step 1: Enable + configure via CLI
 
-**File:** none — runtime flags parsed in `model_gateway/src/main.rs` (~line 354) into `RouterConfig` (`config/types.rs`).
+**File:** none — runtime flags are `CliArgs` fields (the `Priority Scheduler` `help_heading` group in `model_gateway/src/main.rs`), parsed into `RouterConfig` (`config/types.rs`).
 
 ```
 --priority-scheduler-enabled \
@@ -100,7 +100,7 @@ impl ClassQueue for LifoClassQueue {
 }
 ```
 
-Then swap the single construction site — `engine.rs::queue_for` (~line 723), the only place a `ClassQueue` is built:
+Then swap the single construction site — `engine.rs::queue_for`, the only place a `ClassQueue` is built:
 
 ```rust
 fn queue_for(settings: &SchedulerSettings, class: Class) -> Arc<dyn ClassQueue> {
@@ -129,7 +129,7 @@ impl TenantPolicyResolver for CachingTenantPolicyResolver {
 }
 ```
 
-Then build it where `StaticTenantPolicyResolver::from_settings` is called — `state.rs::try_build_priority` (~line 109), assigning to `resolver: Arc<dyn TenantPolicyResolver>` in `SchedulerState`. `admission.rs` reads it as `state.resolver.policy(tenant).max_class`.
+Then build it where `StaticTenantPolicyResolver::from_settings` is called — `state.rs::try_build_priority`, assigning to `resolver: Arc<dyn TenantPolicyResolver>` in `SchedulerState`. `admission.rs` reads it as `state.resolver.policy(tenant).max_class`.
 
 **Verify:** `cargo test -p smg scheduler::policy`
 

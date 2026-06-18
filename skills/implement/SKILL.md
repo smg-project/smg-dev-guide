@@ -55,14 +55,13 @@ These are real, actively-developed subsystems that don't yet have a step-by-step
 | Signal in User Request | Where it lives |
 |------------------------|----------------|
 | Provider API: Responses, Conversations, Realtime (for Anthropic/Gemini-style API routers see @provider-api.md) | `model_gateway/src/routers/{responses,conversations,openai/realtime}/` |
-| Terminal UI | `tui/` |
 | Client SDK generation | `clients/openapi-gen/` (`make generate-clients`) |
 
 **If multiple match:** Load all matching recipes. `config-plumbing.md` almost always co-triggers with other recipes (most features need a config field).
 
 **If none match:** This is a novel change. Read the codebase architecture with `smg:map` first, then follow the general pattern: implement → test → verify → chain to `smg:contribute`.
 
-All recipes were rewritten and verified against the codebase (2026-06). They reflect current trait/type names and paths; still run each recipe's `cargo check`/`cargo test` step as you go.
+All recipes were rewritten and verified against the codebase (2026-06; re-verified against HEAD 2026-06-17). They reflect current trait/type names and paths; still run each recipe's `cargo check`/`cargo test` step as you go.
 
 ## Process
 
