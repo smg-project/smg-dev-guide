@@ -4,15 +4,17 @@ Required whenever config types or public APIs change. The #2 contributor mistake
 
 ## Python Bindings (PyO3 + maturin)
 
-`bindings/python/src/lib.rs` exposes ONE pyclass `Router`. There is no `__init__`: the constructor is a `#[new] fn new(...)` with a flat `#[pyo3(signature = (...))]` of ~100 params (`fn new` at lib.rs:869). `RouterConfig` is NOT a struct literal — it is assembled in `to_router_config()` (lib.rs:498) via `RouterConfig::builder()....build()` (lib.rs:668). A new field is threaded through four spots.
+`bindings/python/src/lib.rs` exposes ONE pyclass `Router`. There is no `__init__`: the constructor is a `#[new] fn new(...)` with a flat `#[pyo3(signature = (...))]` of ~110+ params (the `fn new` inside `impl Router`'s `#[pymethods]` block). `RouterConfig` is NOT a struct literal — it is assembled in `to_router_config()` via `RouterConfig::builder()....build()`. A new field is threaded through four spots.
+
+> **Keep `PolicyType` in sync with `PolicyConfig`.** The Python `enum PolicyType` (`bindings/python/src/lib.rs`) must mirror `PolicyConfig` (`model_gateway/src/config/types.rs`) — both currently list the same 9 policies (`Random`, `RoundRobin`, `CacheAware`, `PowerOfTwo`, `LeastLoad`, `Bucket`, `Manual`, `ConsistentHashing`, `PrefixHash`). Adding a policy means updating both plus the `convert_policy` mapping below.
 
 ### Step 1: Add to the `#[new]` signature + store on the pyclass
 
 **File:** `bindings/python/src/lib.rs`
 
-1. Add a default to the `#[pyo3(signature = (...))]` list (lib.rs:759). APPEND at the end — new params MUST go last so positional `_Router(...)` callers don't break (see the `drain_settle_secs` comment at lib.rs:470).
-2. Add the typed arg to `fn new(...)` (lib.rs:869) and set it in the returned `Router { ... }`.
-3. Add the field to the `struct Router` pyclass (lib.rs:365).
+1. Add a default to the `#[pyo3(signature = (...))]` list (the `#[new]` block in `impl Router`). APPEND at the end — new params MUST go last so positional `_Router(...)` callers don't break (see the "Appended last to match the `#[pyo3(signature)]` order" comment in `fn new`, next to `health_check_port`).
+2. Add the typed arg to `fn new(...)` (the `Router` constructor) and set it in the returned `Router { ... }`.
+3. Add the field to the `struct Router` pyclass.
 
 ```rust
 // signature (append last):  my_field = None,
@@ -23,15 +25,15 @@ Required whenever config types or public APIs change. The #2 contributor mistake
 
 ### Step 2: Thread it through `to_router_config()` builder
 
-**File:** `bindings/python/src/lib.rs` (lib.rs:498)
+**File:** `bindings/python/src/lib.rs` (the `to_router_config` method)
 
-Add a builder call in the `RouterConfig::builder()...` chain (lib.rs:668). Use `maybe_*` for `Option` fields:
+Add a builder call in the `RouterConfig::builder()...` chain (the `config::RouterConfig::builder()` call near the end of `to_router_config`). Use `maybe_*` for `Option` fields:
 
 ```rust
 .maybe_my_field(self.my_field.as_ref())
 ```
 
-If it belongs to discovery, add it to the `DiscoveryConfig { .. }` literal instead (lib.rs:583). For a new enum, mirror the `convert_policy` pattern (lib.rs:503): `match` on the variant, return `config::ConfigError::InvalidValue` on a bad string.
+If it belongs to discovery, add it to the `DiscoveryConfig { .. }` literal instead (the `Some(DiscoveryConfig { .. })` block in `to_router_config`). For a new enum, mirror the `convert_policy` closure (the `let convert_policy = |policy: &PolicyType| -> ...` closure in `to_router_config`): `match` on the variant, return `config::ConfigError::InvalidValue` on a bad string.
 
 **Anti-pattern:** grepping for `RouterConfig {` — there is no such literal. The only struct literals here are `DiscoveryConfig`, `MetricsConfig`, `RetryConfig`, etc.
 
@@ -39,10 +41,10 @@ If it belongs to discovery, add it to the `DiscoveryConfig { .. }` literal inste
 
 **File:** `bindings/python/src/smg/router_args.py`
 
-`RouterArgs` (router_args.py:27) is a dataclass; `router.py:347` calls `_Router(**args_dict)`. A param missing here is never passed.
+`RouterArgs` (the `@dataclasses.dataclass class RouterArgs` in `router_args.py`) is a dataclass; `router.py`'s `Router.from_args` calls `_Router(**args_dict)`. A param missing here is never passed.
 
 1. Add the dataclass field (with default) to `RouterArgs`.
-2. Add the matching `--my-field` in `add_cli_args(...)` under the right `add_argument_group`.
+2. Add the matching `--my-field` in `RouterArgs.add_cli_args(...)` under the right `add_argument_group`.
 
 **Verify:** field name matches the `#[new]` param exactly (underscores).
 
@@ -57,7 +59,7 @@ python -c "from smg import Router; Router(worker_urls=['http://127.0.0.1:8000'],
 
 ## Go SDK (cgo FFI + gRPC)
 
-Two layers. Rust FFI exports live in `bindings/golang/src/*.rs` (client.rs, policy.rs, tokenizer.rs, preprocessor.rs, postprocessor.rs, stream.rs, grpc_converter.rs, tool_parser.rs, memory.rs) as `#[no_mangle] pub unsafe extern "C" fn sgl_*`. `src/lib.rs` only re-exports + wires modules (lib.rs:18). The Go cgo bridge lives in `internal/ffi/*.go` (those `import "C"`); top-level wrappers (`multi_client.go`, `client.go`) do NOT import C — they delegate to `internal/ffi` and `internal/grpc`. Module path: `github.com/lightseek/smg/go-grpc-sdk`.
+Two layers. Rust FFI exports live in `bindings/golang/src/*.rs` (client.rs, policy.rs, tokenizer.rs, preprocessor.rs, postprocessor.rs, stream.rs, grpc_converter.rs, tool_parser.rs, memory.rs) as `#[no_mangle] pub unsafe extern "C" fn sgl_*`. `src/lib.rs` only re-exports + wires modules (its `pub use` / `mod` block). The Go cgo bridge lives in `internal/ffi/*.go` (those `import "C"`); top-level wrappers (`multi_client.go`, `client.go`) do NOT import C — they delegate to `internal/ffi` and `internal/grpc`. Module path: `github.com/lightseek/smg/go-grpc-sdk`.
 
 ### Step 1: Add the Rust FFI export
 
@@ -74,7 +76,7 @@ pub unsafe extern "C" fn sgl_my_function(
 }
 ```
 
-Re-export it from `src/lib.rs` (lib.rs:18): `pub use client::sgl_my_function;`. Follow `sgl_client_create` (client.rs:49) for the null-check + error-out contract.
+Re-export it from `src/lib.rs` (in the `pub use` block): `pub use client::sgl_my_function;`. Follow `sgl_client_create` (in `src/client.rs`) for the null-check + error-out contract.
 
 **Anti-pattern:** adding the `extern "C" fn` to `src/lib.rs` — it only does `pub use` + `mod`.
 
@@ -89,7 +91,7 @@ result := C.sgl_my_function(h.handle, cArg, &errorPtr)
 if ErrorCode(result) != ErrorSuccess { /* GoString(errorPtr); C.sgl_free_string(errorPtr) */ }
 ```
 
-2. Surface it from the top-level wrapper that already imports `internal/ffi` (e.g. `multi_client.go:15`), NOT raw `C.` calls in top-level code.
+2. Surface it from the top-level wrapper that already imports `internal/ffi` (e.g. `multi_client.go`, which imports `github.com/lightseek/smg/go-grpc-sdk/internal/ffi`), NOT raw `C.` calls in top-level code.
 
 ```go
 func (c *MultiClient) MyFunction(arg string) error { return c.ffiClient.MyFunction(arg) }

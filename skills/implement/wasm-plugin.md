@@ -125,4 +125,5 @@ Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings -> commit.
 - `generate!` and `bindgen!` both need the `path` arg; omitting it on the guest fails to find the WIT.
 - Default limits: `max_memory_pages: 1024` (= 64MB), `max_execution_time_ms: 1000`, plus `max_body_size: 10MB` (`config.rs` `Default`). A guest exceeding them is killed.
 - Upload URL is `/wasm`, not `/admin/wasm`, despite living on the admin router.
+- `--enable-wasm` is exposed in the Rust binary, the Python launcher (`bindings/python/src/smg/router_args.py`), and the Helm chart (`deploy/helm/`). With it off, the WASM middleware is skipped entirely (`model_gateway/src/middleware/wasm.rs`).
 - WIT identifiers are kebab-case; generated Rust is snake_case (`now-epoch-ms` -> `now_epoch_ms`) and PascalCase types (`modify-action` -> `ModifyAction`).

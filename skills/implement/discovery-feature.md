@@ -8,7 +8,7 @@ All metadata must flow through the label pipeline. Never add `_override` fields 
 DiscoverMetadataStep: Backend probe → discovered_labels HashMap
     ↓
 CreateLocalWorkerStep: Merge with config.labels (config wins)
-    ↓ Extract special keys (kv_connector, kv_role)
+    ↓ Extract special keys (kv_connector, kv_role, kv_engine_id)
     ↓ Resolve model_id (priority chain):
     ↓   1. config.models.primary()
     ↓   2. labels["served_model_name"]
@@ -20,6 +20,8 @@ CreateLocalWorkerStep: Merge with config.labels (config wins)
 ```
 
 **To inject new metadata:** Add it as a label. The pipeline handles the rest.
+
+Note: gRPC backend detection (sglang/vllm/trtllm/tokenspeed/mlx — `tokenspeed` is new) lives in `workflow/steps/local/detect_backend.rs`.
 
 ## Steps
 

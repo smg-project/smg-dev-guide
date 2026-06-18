@@ -46,7 +46,7 @@ Model on the integration tests in `crates/mesh/src/tests/crdt_integration.rs` (L
 ## Send watermark / ack / retry
 
 Per-peer, per-KEY send watermark (`crdt_kv/watermark.rs`, `CrdtWatermark`):
-- Sender filters the op-log with `acked.allows(op)` (ts > acked version for that key) before batching — see `gossip_controller.rs` / `gossip_service.rs` send loops.
+- Sender filters the op-log with `acked.allows(op)` ((ts, replica_id) > acked for that key — op-id tie-break) before batching — see `gossip_controller.rs` / `gossip_service.rs` send loops.
 - Receiver returns `CrdtWatermark::from_ops` of what it merged; this rides back as a `CrdtAck` (`watermark_to_crdt_ack`) and the sender advances via `merge_max`.
 - Un-acked keys (dropped batch, slow peer) are resent next round. Keying by key — not by author replica — means one lost op only delays that one key.
 
@@ -55,7 +55,7 @@ Per-peer, per-KEY send watermark (`crdt_kv/watermark.rs`, `CrdtWatermark`):
 Only if neither LWW nor EpochMaxWins fits. Strategy logic lives entirely inside an engine; the router (`crdt_kv/crdt.rs`) stays strategy-agnostic.
 
 1. Add a variant to `MergeStrategy` (`merge_strategy.rs`).
-2. Implement `NamespaceCrdtEngine` (`crdt_kv/engine/mod.rs`) — byte-oriented `put_local` / `delete_local` / `get` / `apply_remote_ops` / `export_ops` / `gc_tombstones` / `generation`. Own your live state, per-key locks, `OperationLog`, and the shared `Arc<LamportClock>`. Model on `engine/lww.rs` (simplest) or `engine/rate_limit.rs` (typed state).
+2. Implement `NamespaceCrdtEngine` (`crdt_kv/engine/mod.rs`) — byte-oriented `put_local` / `delete_local` / `get` / `contains_key` / `keys` / `len` / `apply_remote_ops` / `export_ops` / `gc_tombstones` / `generation` / `op_generation`. Own your live state, per-key locks, `OperationLog`, and the shared `Arc<LamportClock>`. Model on `engine/lww.rs` (simplest) or `engine/rate_limit.rs` (typed state).
 3. Wire the variant in `CrdtOrMap::register_merge_strategy` (`crdt.rs`) to construct your engine.
 4. Compaction: call `OperationLog::compact_by_key(fold)` with your per-key fold; truncate-oldest (`truncate_oldest_over_threshold`, fires past `AUTO_COMPACT_THRESHOLD = 10_000`) is LOCAL-write path only — dropping on the remote-merge path sheds remotely-learned keys.
 
@@ -66,6 +66,7 @@ Only if neither LWW nor EpochMaxWins fits. Strategy logic lives entirely inside 
 - Op-id `(replica_id, timestamp)` must be globally unique per node — all engines share one `LamportClock`.
 - `apply_remote_ops` must emit a `CrdtChange` only when `get` actually changes (suppress idempotent re-applies), or subscribers get spurious events.
 - Ephemeral/lossy traffic (tenant deltas, tree repair) belongs in `StreamNamespace`, not CRDT — it is dropped under backpressure, not retried.
-- Gateway-side wiring lives in `model_gateway/src/mesh/wiring.rs` (`MeshAdapters::start`): it configures the CRDT prefixes/engines and starts each adapter's inbound sync **before** gossip starts (order matters — an unregistered engine drops to the default merge). A new replicated value that needs its own sync adapter is registered there.
+- Gateway-side wiring: there are three adapters in `model_gateway/src/mesh/adapters/` — `worker_sync.rs` (`worker:` CRDT, LWW), `rate_limit_sync.rs` (`rl:` CRDT, EpochMaxWins), and `tree_sync.rs` (the `td:` *stream* adapter for the distributed prefix tree, owned/wired by the cache-aware policy, not a CRDT). `MeshAdapters::start` (`model_gateway/src/mesh/wiring.rs`) registers the two CRDT prefixes/engines (`worker:` = LWW, `rl:` = EpochMaxWins) and starts each adapter's **inbound** sync **before** gossip starts (order matters — an unregistered engine drops to the default merge). A new replicated value that needs its own sync adapter is registered there.
+- Outbound worker mesh sync: `WorkerSyncAdapter::start` (`adapters/worker_sync.rs`) also spawns an **outbound** publish loop over the registry's `WorkerEvent` stream — it publishes each locally-owned worker as `worker:{id}` under single-writer/owner ownership (mesh-imported workers are filtered out by registration origin so a peer's state is never re-published), tombstones on removal, and on broadcast-lag re-publishes all local workers + tombstones any it published that no longer exist (recovery).
 
 **Verify:** `cargo test -p smg-mesh`

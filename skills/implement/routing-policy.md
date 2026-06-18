@@ -20,7 +20,7 @@ Note: `dp_min_token.rs` implements a *different* trait, `DPRankLoadPolicy` (sele
 
 **File:** `model_gateway/src/policies/{POLICY_NAME}.rs`
 
-Model this on `random.rs` (stateless) or `power_of_two.rs` (cached load state). Required methods: `select_worker`, `name`, `as_any`. Default methods you may override: `on_request_complete`, `needs_request_text`, `update_loads`, `reset`. Always filter via the `get_healthy_worker_indices` helper — it applies `is_healthy() && circuit_breaker_can_execute()` per worker.
+Model this on `random.rs` (stateless) or `power_of_two.rs` (cached load state). Required methods: `select_worker`, `name`, `as_any`. Default methods you may override: `on_request_complete`, `needs_request_text`, `update_loads`, `remove_worker`, `reset`. Always filter via the `get_healthy_worker_indices` helper — it applies `is_healthy() && circuit_breaker_can_execute()` per worker.
 
 ```rust
 use std::sync::Arc;
@@ -116,5 +116,6 @@ Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings -> commit.
 - `SelectWorkerInfo` is a **struct**, not an enum — there are no `Http`/`Grpc` variants. Branch on its fields: `info.tokens: Option<&[u32]>` (token path) vs `info.request_text: Option<&str>` (text path); `cache_aware.rs::select_worker` does exactly this. If your policy reads request text/tokens, override `needs_request_text()` to return `true`.
 - Header-based routing reads `info.headers: Option<&http::HeaderMap>` (e.g. `X-SMG-Target-Worker`, `X-SMG-Routing-Key`); consistent-hash policies use the prebuilt `info.hash_ring: Option<Arc<HashRing>>` rather than rebuilding per request.
 - State must be `Send + Sync`. Prefer `AtomicUsize` (round_robin) or `DashMap`; `power_of_two.rs` uses `RwLock<HashMap<..>>` for cached loads updated via `update_loads`. Never `.unwrap()` on worker access or hold a lock across `select_worker`.
-- Load-aware policies (those overriding `update_loads`) are fed by the registry only if discoverable — `power_of_two` is gathered by name via `get_all_power_of_two_policies()`; a new load-aware policy needs an equivalent hook to receive load updates.
+- Load-aware policies (those overriding `update_loads` — both `power_of_two` and `least_load`) are fed by the registry only if discoverable. `PolicyRegistry::get_all_load_aware_policies()` (`policies/registry.rs`) gathers them by name via an internal `is_load_aware(name)` check (currently `name == "power_of_two" || name == "least_load"`); a new load-aware policy must be added to that `is_load_aware()` name check to receive periodic `update_loads`.
+- Load-aware policies should also override `remove_worker(&self, url)` to prune cached per-worker load when a worker is removed; the registry's `remove_worker_from_load_aware` calls it on each load-aware policy under worker churn so caches don't grow unbounded (see `least_load.rs` / `power_of_two.rs`).
 - There are 9 `LoadBalancingPolicy` impls (random, round_robin, power_of_two, cache_aware, least_load, bucket, manual, consistent_hashing, prefix_hash). Match an existing one rather than inventing API.

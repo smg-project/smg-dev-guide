@@ -199,6 +199,8 @@ Add cases for: no markers (returns text unchanged), multiple/parallel calls, emp
 **Verify:** `cargo test -p tool-parser --test tool_parser_acme`
 **Anti-pattern:** Tool names absent from `create_test_tools()` — `handle_json_tool_streaming` validates against the `tools` slice and silently drops unknown names, so streaming emits nothing.
 
+> Note: "silently drops unknown names" is specific to this JSON streaming path. Schema-aware parsers like MiniMax-M2 (`parsers/minimax_m2.rs`) override `parse_complete_with_tools`, coerce each argument by its declared schema type (`helpers::coerce_by_schema_type`), and **forward** unknown tool names (still emit a tool_call). `tools` there only supplies types via `helpers::param_types_for_function`, not an allow-list.
+
 ### Step 5: Quality gate
 
 Invoke `smg:contribute` to run fmt → clippy → test → bindings → commit.

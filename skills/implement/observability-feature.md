@@ -24,6 +24,8 @@ histogram!("my_latency_ms").record(elapsed_ms as f64);
 
 **Anti-pattern:** Using raw strings for labels on hot paths — unbounded allocations, label cardinality explosion.
 
+**Anti-pattern:** interning dynamic per-request path segments. The HTTP metrics layer labels by the matched axum route *template* (`matched_path_label` / `MatchedPath` in `model_gateway/src/middleware/metrics.rs`), with an `"other"` fallback when no route matched, to bound cardinality — the interner never evicts.
+
 Static values for common cases (zero allocation):
 ```rust
 status_code_to_static_str(200)  // → Some("200")
@@ -50,7 +52,7 @@ span.record("worker_url", url.as_str());
 ```
 
 - OTel context is bridged in `model_gateway/src/observability/otel_trace.rs`; trace context propagates through gRPC metadata (see @grpc-backend.md)
-- Real-time metrics are also pushed over a WebSocket (`observability/metrics_ws/`)
+- Runtime self-observability lives in `model_gateway/src/observability/runtime_metrics.rs`: a background observer task (`spawn_observer`) runs an event-loop canary (sleeps 10ms in a loop, records `smg_tokio_event_loop_delay_seconds`, increments `smg_tokio_event_loop_stalls_total` when wake drift exceeds the threshold) plus a ~1s `RuntimeMetrics` sampler (queue depth, alive tasks, worker count, per-worker busy ratio, parks) — all exposed on the Prometheus `/metrics` endpoint.
 
 ## Logging Rules
 

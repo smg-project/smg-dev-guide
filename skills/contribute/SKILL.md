@@ -26,7 +26,7 @@ BEFORE claiming code is ready, opening a PR, or committing:
    If fails:  Fix formatting, re-run
 
 2. LINT
-   Run:      cargo clippy --all-targets --all-features -- -D warnings
+   Run:      cargo clippy --workspace --all-targets --all-features -- -D warnings
    Expected: No warnings, no errors
    If fails:  Fix all warnings, re-run
 
@@ -59,6 +59,9 @@ Skip any step = not verified. Run ALL five.
 | `allow_attributes = "warn"` | Use `#[expect(lint, reason = "...")]` not `#[allow]` |
 | Disallowed: `tokio::task::spawn` | Use project's task spawning utilities |
 | Disallowed: `uuid::Uuid::new_v4` | Use `now_v7` |
+| Disallowed: `std::process::exit` | Use normal shutdown logic, not a hard process exit |
+
+Disallowed macros (`clippy.toml`): `unimplemented!` and `todo!` — remove before merging to main.
 
 ## Import Organization
 
@@ -108,7 +111,7 @@ let value = parse(input).context("parsing model config")?;
 | Add reasoning parser | `crates/reasoning_parser/src/parsers/` |
 | Update Python bindings | `bindings/python/src/lib.rs` |
 | Update Go SDK | `bindings/golang/` |
-| Regenerate client SDKs (after protocol changes) | `make generate-clients` (`clients/openapi-gen/`) |
+| Regenerate client SDKs (after protocol changes) | `make generate-clients` (`clients/openapi-gen/`) — regenerates Python + Java types only; the Go SDK is hand-maintained |
 | Add storage backend | `crates/data_connector/src/` |
 | Add E2E tests | `e2e_test/` |
 | Add WASM middleware | `examples/wasm/` (guests) + `crates/wasm/src/` (host) |

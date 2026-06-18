@@ -48,16 +48,20 @@ fn parse_my_type(s: &str) -> Result<String, String> {
 
 **File:** `model_gateway/src/main.rs`
 
-Find BOTH functions and add the field:
+Both are `CliArgs` methods taking `&self` — `self` (the parsed CLI args) is the single source, there is no separate config object to `.or()` against. Find BOTH and add the field, but note they build differently:
 
 ```rust
-fn to_router_config(...) -> RouterConfig {
-    // ... add: my_field: cli.my_field.or(config.my_field),
-}
+// to_router_config: assembles via RouterConfig::builder()....build()
+let builder = RouterConfig::builder()
+    // ...
+    .my_field(self.my_field);          // or .maybe_my_field(self.my_field.as_ref()) for an Option
+//  cf. .health_check_port(self.health_check_port), .enable_wasm(self.enable_wasm)
 
-fn to_server_config(...) -> ServerConfig {
-    // ... add: my_field: cli.my_field.or(config.my_field),
-}
+// to_server_config: returns a ServerConfig { ... } struct literal
+Ok(ServerConfig {
+    // ...
+    my_field: self.my_field,           // cf. health_check_port: self.health_check_port,
+})
 ```
 
 **Verify:** `grep -n "my_field" model_gateway/src/main.rs` — must show assignments in BOTH functions.

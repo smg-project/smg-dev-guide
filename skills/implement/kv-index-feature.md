@@ -9,7 +9,13 @@ Radix trees for cache-aware routing. Tracks which workers have which prompt pref
 | `StringTree` | `&str` (characters) | HTTP routing — prompt text prefix matching |
 | `TokenTree` | `&[u32]` (token IDs) | gRPC routing — token sequence prefix matching |
 
-Both implement the `RadixTree` trait: prefix insertion, longest-prefix-match (`prefix_match`/`prefix_match_with_counts`), per-tenant eviction (`evict(tenant, max_units)`), concurrent access (`DashMap` **and** `parking_lot::RwLock`).
+`StringTree` is a re-export alias of `string_tree::Tree` (`crates/kv_index/src/lib.rs`).
+
+Both implement the `RadixTree` trait (`crates/kv_index/src/lib.rs`): prefix insertion, longest-prefix-match (`prefix_match`/`prefix_match_with_counts`), per-tenant eviction (`evict(tenant, max_units)`), concurrent access (`DashMap` **and** `parking_lot::RwLock`).
+
+### Match+insert (the routing hot path)
+
+`cache_aware.rs` does not call `insert_text`/`insert_tokens` then `match_prefix_with_counts` separately (two tree descents). It calls the FUSED `match_and_insert(key, tenant)` / `match_and_insert_with(key, select)` on both `Tree` (`string_tree.rs`) and `TokenTree` (`token_tree.rs`): one descent does longest-prefix-match, then inserts the unmatched remainder. The legacy two-descent `insert_*` + `match_prefix_with_counts` pair still exists. Prefer `match_and_insert*` for any read-then-populate path (see `match_and_insert` in `model_gateway/src/policies/cache_aware.rs`).
 
 ## Steps
 
@@ -24,6 +30,8 @@ Both implement the `RadixTree` trait: prefix insertion, longest-prefix-match (`p
 ### PositionalIndexer
 
 Event-driven cache-aware routing at block level — finer granularity than tree-level prefix matching. Tracks which worker has which token blocks cached.
+
+There is no longer a 2048-worker cap (removed): `PositionalIndexer`/`TreeSizes` (`crates/kv_index/src/event_tree.rs`) use a segmented growable array supporting unbounded worker counts (2048 is just the first segment). `intern_worker` returns `Result<WorkerId, WorkerIdExhausted>` — erroring only on u32 id-space exhaustion — and must NEVER panic, because it runs inside per-worker subscription tasks (a panic would silently stop KV event indexing for that worker). KV subscription failures are now surfaced rather than swallowed.
 
 ## CacheAware Integration
 

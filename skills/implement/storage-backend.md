@@ -83,7 +83,7 @@ Add `MybackendConfig` (mirror `RedisConfig`: connection field, `#[serde(default)
 
 ### Step 3: Migrations (SQL backends only)
 
-Key-value backends (redis) need none. SQL backends add a `mybackend_migrations.rs` + use `versioning.rs`, expose `init_schema` per struct, and a `run_migrations()` on the store that `create_storage` awaits (see `postgres.rs:63` and `create_postgres_storage` in `factory.rs`).
+Key-value backends (redis) need none. SQL backends add a `mybackend_migrations.rs` + use `versioning.rs`, expose `init_schema` per struct, and a `run_migrations()` on the store that `create_storage` awaits (see `postgres.rs` `run_migrations` and `create_postgres_storage` in `factory.rs`).
 
 ### Step 4: Wire into the factory
 
@@ -120,4 +120,4 @@ Add `#[cfg(test)] mod tests` to `mybackend.rs` (round-trip each trait; cursor pa
 - Three structs / three traits, never a single `StorageBackend`. Hooks are wrapped by `create_storage`; the old `hooks.on_write/on_delete` calls do not exist.
 - Per-domain error enums — there is no unified `StorageError` type.
 - Respect `SchemaConfig` (`col`/`is_skipped`) and append `resolve_extra_column_values` on writes so tenancy/hook columns persist.
-- Package `data-connector` (v2.2.0).
+- Package `data-connector` (v2.3.0).

@@ -27,12 +27,12 @@ High-performance Rust gateway for LLM inference backends. Routes requests to wor
 | `tokenizer` | LLM tokenization, chat templates | `Tokenizer` |
 | `multimodal` | Image/audio processing (crate `llm-multimodal`). Per-model vision specs (LLaVA, Qwen-VL, Llama4, Phi3/4-V, Pixtral, Kimi-VL), media fetching | `ImageFrame`, `MediaContentPart`, `MediaConnector` |
 | `workflow` | Step-based async workflow engine (wfaas) | `StepExecutor`, `WorkflowContext` |
-| `bindings/python` | PyO3 bindings. `Router` class with ~80 constructor params, enum mapping | `Router`, `PolicyType` |
+| `bindings/python` | PyO3 bindings. `Router` class with ~110 constructor params, enum mapping | `Router`, `PolicyType` |
 | `bindings/golang` | Go SDK via FFI (cgo). OpenAI-style API, streaming, tool calling | `Client`, `ChatCompletionRequest` |
 | `clients/rust` | Rust client library | |
 | `clients/python`, `clients/java` | Client SDKs generated from the OpenAPI spec | |
 | `clients/openapi-gen` | Generates the OpenAPI spec + Python/Java client SDKs from protocol types (`make generate-clients`) | |
-| `tui` | Terminal dashboard (`smg-tui`): monitor workers, route traffic, chat with models | `smg-tui` |
+| `mock_worker` | Multi-port mock HTTP/gRPC inference-worker harness (package `mock-worker`, supports the TokenSpeed engine). Runs many fake workers in one process for routing/scale testing | (binary) |
 | `grpc_servicer` | Python gRPC servicer wrapping vLLM/SGLang backends | |
 
 ## Subsystems Inside `model_gateway`
@@ -58,7 +58,7 @@ model_gateway (implementation — ONE consumer writes each field)
 bindings/* (language SDKs — wrap model_gateway + protocols)
 ```
 
-**Directory layout**: Library crates live under `crates/` (e.g. `crates/mcp/`, `crates/mesh/`). `model_gateway/`, `bindings/`, `clients/`, and `tui/` remain at repo root.
+**Directory layout**: Library crates live under `crates/` (e.g. `crates/mcp/`, `crates/mesh/`). `model_gateway/`, `bindings/`, `clients/`, and `grpc_servicer/` remain at repo root.
 
 **Iron law**: If only one crate writes a field, it doesn't belong in `crates/protocols/`. K8s-specific, runtime-specific, or gateway-specific fields stay in `model_gateway`.
 
@@ -88,7 +88,7 @@ Client → WS upgrade → Realtime session registry → Proxy to backend WS
 
 ## Worker Lifecycle (Discovery DAG)
 
-Steps live in `model_gateway/src/workflow/steps/local/` (a DAG, not a fixed 5-step list):
+Steps live under `model_gateway/src/workflow/steps/` (branches `local/`, `shared/`, `external/`, assembled in `steps/mod.rs`) — a DAG, not a fixed 5-step list:
 
 ```
 K8s Pod → PodInfo::from_pod() (service_discovery.rs) → handle_pod_event() → AddWorker
