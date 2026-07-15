@@ -1,6 +1,6 @@
 # Adding MCP Features to SMG
 
-`smg-mcp` (`crates/mcp/`) is the Model Context Protocol client: it discovers tools on external servers, gates execution behind an approval policy, and proxies calls. The crate is **OpenAI-protocol-free** — response-format adapter logic lives in `model_gateway::routers::common::openai_bridge`, not here (`lib.rs` crate doc). Built on `rmcp` 0.8.x (`Cargo.toml`, `[dependencies] rmcp`).
+`smg-mcp` (`crates/mcp/`) is the Model Context Protocol client: it discovers tools on external servers, gates execution behind an approval policy, and proxies calls. The crate is **OpenAI-protocol-free** — response-format adapter logic lives in `model_gateway::routers::common::openai_bridge`, not here (`lib.rs` crate doc). Built on `rmcp` 1.7 (`Cargo.toml`, `[dependencies] rmcp`). Note: rmcp 1.7 **dropped the standalone SSE client transport** — the `Sse` variant now returns an error (see Task B).
 
 Central type: `McpOrchestrator` (`core/orchestrator.rs`) owns the inventory, connection pool, and an `Arc<ApprovalManager>` built from `McpConfig` (`core/config.rs`).
 
@@ -76,11 +76,11 @@ To make this reachable from config you'd extend `from_yaml_config` and `PolicyCo
 Transports are the enum `McpTransport` (`core/config.rs`, `enum McpTransport`), tagged by `protocol` in YAML — `Stdio | Sse | Streamable`. Adding one = **add a variant, then patch every exhaustive `match` on it** (the compiler lists them):
 
 1. `core/config.rs` `enum McpTransport` — add the variant (with `#[serde]` fields).
-2. `core/orchestrator.rs` `connect_server_impl` — build the rmcp transport and call `handler.serve(transport)`. Model on the `Sse` arm: proxy via `super::proxy::resolve_proxy_config`, client via `build_http_client`, transport from `rmcp::transport::*`.
+2. `core/orchestrator.rs` `connect_server_impl` — build the rmcp transport and call `handler.serve(transport)`. Model on the **`Streamable` arm** (the working reference): proxy via `super::proxy::resolve_proxy_config`, client via `build_http_client`, transport from `rmcp::transport::*` (`StreamableHttpClientTransport::with_client`). The `Sse` arm is **not** a template — it now returns `Err(sse_unsupported(..))` since rmcp 1.7 dropped the SSE client transport.
 3. `core/orchestrator.rs` `connect_dynamic_server_with_tenant` — dynamic path (Stdio is rejected here, "Stdio not supported for dynamic connections").
 4. `core/orchestrator.rs` `server_key` and `core/pool.rs` `PoolKey::from_config` — derive the pool key (url + `hash_auth(token, headers)`).
 
-**Anti-pattern:** implementing an `rmcp::Transport` trait. SMG does not define transports as trait impls — it matches the `McpTransport` enum and hands an rmcp-provided transport (`SseClientTransport`, `StreamableHttpClientTransport`, `TokioChildProcess`) to `handler.serve()`. Also update the `Debug` impl (`config.rs`, `impl fmt::Debug for McpTransport`) so secrets stay redacted.
+**Anti-pattern:** implementing an `rmcp::Transport` trait. SMG does not define transports as trait impls — it matches the `McpTransport` enum and hands an rmcp-provided transport (`StreamableHttpClientTransport`, `TokioChildProcess`) to `handler.serve()`. Also update the `Debug` impl (`config.rs`, `impl fmt::Debug for McpTransport`) so secrets stay redacted.
 
 **Verify:** `cargo test -p smg-mcp` (transport parsing tests `test_transport_stdio` / `_sse` / `_streamable` live in `config.rs`).
 

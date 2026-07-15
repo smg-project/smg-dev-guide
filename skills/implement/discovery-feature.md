@@ -69,9 +69,13 @@ Follow @bindings-update.md.
 
 ## Pod Types
 
-| Type | Selector Flag | Purpose |
-|------|--------------|---------|
+The `PodType` enum (`service_discovery.rs`) has four variants — `Encode`, `Prefill`, `Decode`, `Regular` — each selected by a label-selector flag:
+
+| `PodType` | Selector Flag | Purpose |
+|-----------|--------------|---------|
 | Regular | `--selector` | Standard workers |
 | Prefill | `--prefill-selector` | PD disaggregation: prefill |
 | Decode | `--decode-selector` | PD disaggregation: decode |
-| Router | `--router-selector` | Mesh HA peer nodes |
+| Encode | `--encode-selector` | EPD disaggregation: encode |
+
+Note: **Router is not a `PodType`** — it's a separate `is_router` overlay flag (`--router-selector` marks Mesh HA peer nodes), orthogonal to the compute pod type above.

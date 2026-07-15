@@ -120,4 +120,4 @@ Add `#[cfg(test)] mod tests` to `mybackend.rs` (round-trip each trait; cursor pa
 - Three structs / three traits, never a single `StorageBackend`. Hooks are wrapped by `create_storage`; the old `hooks.on_write/on_delete` calls do not exist.
 - Per-domain error enums — there is no unified `StorageError` type.
 - Respect `SchemaConfig` (`col`/`is_skipped`) and append `resolve_extra_column_values` on writes so tenancy/hook columns persist.
-- Package `data-connector` (v2.3.0).
+- Package `data-connector` (v2.3.2).

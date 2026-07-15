@@ -4,15 +4,15 @@ Required whenever config types or public APIs change. The #2 contributor mistake
 
 ## Python Bindings (PyO3 + maturin)
 
-`bindings/python/src/lib.rs` exposes ONE pyclass `Router`. There is no `__init__`: the constructor is a `#[new] fn new(...)` with a flat `#[pyo3(signature = (...))]` of ~110+ params (the `fn new` inside `impl Router`'s `#[pymethods]` block). `RouterConfig` is NOT a struct literal — it is assembled in `to_router_config()` via `RouterConfig::builder()....build()`. A new field is threaded through four spots.
+`bindings/python/src/lib.rs` exposes ONE pyclass `Router`. There is no `__init__`: the constructor is a `#[new] fn new(...)` with a flat `#[pyo3(signature = (...))]` of 110+ params (the `fn new` inside `impl Router`'s `#[pymethods]` block). `RouterConfig` is NOT a struct literal — it is assembled in `to_router_config()` via `RouterConfig::builder()....build()`. A new field is threaded through four spots.
 
-> **Keep `PolicyType` in sync with `PolicyConfig`.** The Python `enum PolicyType` (`bindings/python/src/lib.rs`) must mirror `PolicyConfig` (`model_gateway/src/config/types.rs`) — both currently list the same 9 policies (`Random`, `RoundRobin`, `CacheAware`, `PowerOfTwo`, `LeastLoad`, `Bucket`, `Manual`, `ConsistentHashing`, `PrefixHash`). Adding a policy means updating both plus the `convert_policy` mapping below.
+> **Keep `PolicyType` in sync with `PolicyConfig`.** The Python `enum PolicyType` (`bindings/python/src/lib.rs`) must mirror `PolicyConfig` (`model_gateway/src/config/types.rs`) — both currently list the same 10 policies (`Random`, `RoundRobin`, `Passthrough`, `CacheAware`, `PowerOfTwo`, `LeastLoad`, `Bucket`, `Manual`, `ConsistentHashing`, `PrefixHash`). Adding a policy means updating both plus the `convert_policy` mapping below.
 
 ### Step 1: Add to the `#[new]` signature + store on the pyclass
 
 **File:** `bindings/python/src/lib.rs`
 
-1. Add a default to the `#[pyo3(signature = (...))]` list (the `#[new]` block in `impl Router`). APPEND at the end — new params MUST go last so positional `_Router(...)` callers don't break (see the "Appended last to match the `#[pyo3(signature)]` order" comment in `fn new`, next to `health_check_port`).
+1. Add a default to the `#[pyo3(signature = (...))]` list (the `#[new]` block in `impl Router`). APPEND at the end — new params MUST go last so positional `_Router(...)` callers don't break (see the "Appended last to match the `#[pyo3(signature)]` order" comment in `fn new`; the current tail of the list is `multimodal_shm_min_bytes`).
 2. Add the typed arg to `fn new(...)` (the `Router` constructor) and set it in the returned `Router { ... }`.
 3. Add the field to the `struct Router` pyclass.
 

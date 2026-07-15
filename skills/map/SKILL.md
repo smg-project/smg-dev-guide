@@ -7,7 +7,7 @@ description: Use when you need to understand the SMG codebase structure, find wh
 
 ## What Is SMG?
 
-High-performance Rust gateway for LLM inference backends. Routes requests to workers running vLLM, SGLang, TensorRT-LLM, MLX (and more) with 9 routing policies, KV cache optimization, K8s service discovery, WASM plugins, MCP tool execution, and mesh HA. Exposes OpenAI-, Anthropic-, and Gemini-compatible APIs (plus Responses, Conversations, and Realtime/WebSocket), with a priority admission scheduler, multi-tenancy, and rate limiting.
+High-performance Rust gateway for LLM inference backends. Routes requests to workers running vLLM, SGLang, TensorRT-LLM, MLX (and more) with 10 routing policies, KV cache optimization, K8s service discovery, WASM plugins, MCP tool execution, and mesh HA. Exposes OpenAI-, Anthropic-, and Gemini-compatible APIs (plus Responses, Conversations, and Realtime/WebSocket), with a priority admission scheduler, multi-tenancy, and rate limiting.
 
 ## Crate Map
 
@@ -26,6 +26,7 @@ High-performance Rust gateway for LLM inference backends. Routes requests to wor
 | `reasoning_parser` | Reasoning extraction from 8 model families (DeepSeek-R1, Qwen3, Kimi, GLM, Step3, MiniMax, Cohere, Nano). Streaming | `ReasoningParser` trait, `ParserFactory`, `ParserResult` |
 | `tokenizer` | LLM tokenization, chat templates | `Tokenizer` |
 | `multimodal` | Image/audio processing (crate `llm-multimodal`). Per-model vision specs (LLaVA, Qwen-VL, Llama4, Phi3/4-V, Pixtral, Kimi-VL), media fetching | `ImageFrame`, `MediaContentPart`, `MediaConnector` |
+| `mm_rdma` | Multimodal pixel RDMA (NIXL) transport for the gateway (crate `smg-mm-rdma`) | |
 | `workflow` | Step-based async workflow engine (wfaas) | `StepExecutor`, `WorkflowContext` |
 | `bindings/python` | PyO3 bindings. `Router` class with ~110 constructor params, enum mapping | `Router`, `PolicyType` |
 | `bindings/golang` | Go SDK via FFI (cgo). OpenAI-style API, streaming, tool calling | `Client`, `ChatCompletionRequest` |
@@ -41,7 +42,7 @@ Beyond the crates, `model_gateway/src/` hosts several gateway-only subsystems. *
 
 | Subsystem | Location | Role | Key Types |
 |-----------|----------|------|-----------|
-| Routing policies | `policies/` | 9 load-balancing policies + factory + per-model registry | `LoadBalancingPolicy`, `PolicyFactory`, `PolicyRegistry`, `SelectWorkerInfo` |
+| Routing policies | `policies/` | 10 load-balancing policies + factory + per-model registry | `LoadBalancingPolicy`, `PolicyFactory`, `PolicyRegistry`, `SelectWorkerInfo` |
 | Provider routers | `routers/` | OpenAI, Anthropic, Gemini APIs + Responses, Conversations, Realtime/WebSocket, gRPC | `RouterManager` |
 | Priority scheduler | `middleware/scheduler/` | Priority-aware admission, per-class queues, slots, preemption, capacity reservations, autoscaling metrics | `PriorityScheduler`, `SchedulerPermit`, `Class`, `AdmitOutcome`, `TenantPolicy` |
 | Multi-tenancy | `tenant.rs` + `middleware/tenant_resolution.rs` | Canonical tenant identity + per-request resolution | `TenantIdentity`, `TenantKey`, `DataPlaneCaller`, `RouteRequestMeta` |

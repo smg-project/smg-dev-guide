@@ -77,7 +77,7 @@ impl RouterTrait for MyProviderRouter {
 }
 ```
 
-Worker selection (in `AnthropicRouter::route_messages`): `WorkerSelector::new(&registry, &client).select_worker(&SelectWorkerRequest { model_id, headers, provider: Some(ProviderType::Anthropic), ..Default::default() })`. `ProviderType` lives in `crates/protocols/src/worker.rs` (`enum ProviderType`: `OpenAI | XAI | Anthropic | Gemini`) — add a variant there if your provider needs distinct request shaping.
+Worker selection (in `AnthropicRouter::route_messages`): `WorkerSelector::new(&registry, &client).select_worker(&SelectWorkerRequest { model_id, headers, provider: Some(ProviderType::Anthropic), ..Default::default() })`. `ProviderType` lives in `crates/protocols/src/worker.rs` (`enum ProviderType`: `OpenAI | XAI | Anthropic | Gemini | Custom(String)`) — add a dedicated variant only if your provider needs distinct request shaping; otherwise `ProviderType::Custom("myprovider".into())` covers passthrough providers without touching the enum.
 
 Streaming split (also in `route_messages`): `let is_streaming = body.stream.unwrap_or(false);` then call into separate modules. Anthropic's `streaming::execute` / `non_streaming::execute` take `(&RouterContext, RequestContext)` (`execute` in `anthropic/streaming.rs` and `anthropic/non_streaming.rs`); `RequestContext` (`struct RequestContext` in `anthropic/context.rs`) carries the cloned request, headers, `model_id`, `tenant_request_meta`, connected `mcp_servers`, and the pre-selected `worker`.
 

@@ -48,7 +48,7 @@ fn parse_my_type(s: &str) -> Result<String, String> {
 
 **File:** `model_gateway/src/main.rs`
 
-Both are `CliArgs` methods taking `&self` — `self` (the parsed CLI args) is the single source, there is no separate config object to `.or()` against. Find BOTH and add the field, but note they build differently:
+Both are `CliArgs` methods. `to_router_config(&self, ...)` sources fields from `self` (the parsed CLI args). `to_server_config(&self, router_config: RouterConfig)` *also* takes a `RouterConfig` and, for a few discovery-derived fields (e.g. `model_id_source`, `router_selector`), merges CLI-over-config with `.or_else(...)` — but for a plain new scalar flag you still just set it from `self` in both. Find BOTH and add the field, but note they build differently:
 
 ```rust
 // to_router_config: assembles via RouterConfig::builder()....build()
