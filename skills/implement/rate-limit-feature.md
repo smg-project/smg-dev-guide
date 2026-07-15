@@ -7,7 +7,7 @@ The bucket's two parameters map straight to config (`app_context.rs::maybe_rate_
 | `TokenBucket::new` arg | RouterConfig field | Meaning |
 |---|---|---|
 | `capacity` | `max_concurrent_requests: i32` | Burst size / max in-flight. `<= 0` disables rate limiting entirely (`rate_limiter = None`). |
-| `refill_rate` | `rate_limit_tokens_per_second: Option<i32>`, `unwrap_or(max_concurrent_requests)` | Tokens/sec. **`0` ⇒ pure concurrency limiting** (semaphore: tokens only come back when a request finishes). |
+| `refill_rate` | `rate_limit_tokens_per_second: Option<i32>`, coerced via `.filter(|&t| t > 0).unwrap_or(max_concurrent_requests)` | Tokens/sec. **`None`, `0`, or negative all fall back to `max_concurrent_requests`** — a configured `0` behaves identically to leaving the field unset, so semaphore mode is *not* reachable through this config path. |
 
 A token is **not** returned when the handler returns — `TokenGuardBody` wraps the response body and calls `return_tokens_sync(1.0)` on `Drop`, i.e. only after the whole (possibly streamed) body is delivered (`concurrency.rs`, `TokenGuardBody::drop`). So `capacity` genuinely bounds concurrent *streams*, not just handler invocations.
 
@@ -19,7 +19,7 @@ These are plain `RouterConfig` fields with CLI flags already wired in `main.rs` 
 
 Common configurations:
 
-- **Concurrency cap only (semaphore):** `max_concurrent_requests=64`, `rate_limit_tokens_per_second=0`. 64 in-flight; new requests queue until one finishes.
+- **Burst == steady rate (the closest to a pure concurrency cap):** `max_concurrent_requests=64`, leave `rate_limit_tokens_per_second` unset (or any `<= 0`, which coerces to the same). 64-burst + 64 req/s refill. Note: there is **no** config value that yields a true semaphore (refill_rate 0) via `maybe_rate_limiter` — a configured `0` is filtered out and falls back to `max_concurrent_requests`.
 - **Rate limit + burst:** `max_concurrent_requests=200` (burst), `rate_limit_tokens_per_second=50` (steady 50 req/s).
 - **Default (field unset):** refill rate falls back to `max_concurrent_requests`, so it acts as both a 64-burst and a 64 req/s limit.
 

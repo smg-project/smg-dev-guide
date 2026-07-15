@@ -39,7 +39,7 @@ Two-factor auth: API key (SHA-256) + JWT/OIDC. Roles: Admin (control plane) and 
 4. Validate: expiry, issuer, audience
 5. Extract role from `role_claim`
 6. Map via `role_mapping`
-7. Check JTI cache for replay (10k token cache)
+7. *(Opt-in, off by default)* Check JTI cache for replay (10k token cache, `DEFAULT_JTI_CACHE_SIZE`). `JwtValidator::from_config` sets `enable_jti_check = false`, so the default control-plane path skips this — it runs only when JTI replay protection is explicitly enabled (`from_config_with_options`).
 
 ## Audit Events
 

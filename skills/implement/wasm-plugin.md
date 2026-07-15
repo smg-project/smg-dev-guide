@@ -10,7 +10,7 @@ Most "plugins" are new **guests** in `examples/wasm/` against the existing world
 |---------|------|-------------|
 | `OnRequest` | Before routing | Auth, rate limiting, request rewrite |
 | `OnResponse` | After backend response | Logging, response rewrite |
-| `OnError` | On error path | Error shaping |
+| `OnError` | On error path | **Not yet implemented** — the enum variant exists but dispatching it returns a runtime error, and the WIT world has no `middleware-on-error` interface. Don't attach modules here. |
 
 ## Actions (`action` variant in `spec.wit`)
 

@@ -5,7 +5,7 @@ Image preprocessing for vision LLMs lives in the `llm-multimodal` crate (lib `ll
 ## Pipeline
 
 ```
-MediaContentPart (Text | ImageUrl | ImageData | ImageEmbeds | VideoUrl | VideoData)   // types.rs
+MediaContentPart (Text | ImageUrl | ImageData | ImageEmbeds | AudioUrl | AudioData | VideoUrl | VideoData)   // types.rs
   -> MediaConnector::fetch_image(MediaSource::{Url,DataUrl,InlineBytes,File})  // media.rs, Blake3 hash
   -> Arc<ImageFrame> { image: DynamicImage, raw_bytes, detail, source, hash }
   -> VisionPreProcessor::preprocess(&[DynamicImage], &PreProcessorConfig) -> PreprocessedEncoderInputs
@@ -13,7 +13,7 @@ MediaContentPart (Text | ImageUrl | ImageData | ImageEmbeds | VideoUrl | VideoDa
   -> tracker emits TrackerOutput { data: MultiModalData, uuids: MultiModalUUIDs }
 ```
 
-Video is a first-class modality: `MediaConnector::fetch_video(MediaSource::...)` returns a `VideoClip`, `VisionPreProcessor` has default `preprocess_video` / `preprocess_video_rgb` hooks, and `Modality::Video` flows through the same `PreprocessedEncoderInputs` contract (see `media.rs`, `vision/processor.rs`, `types.rs`).
+Video is a first-class modality: `MediaConnector::fetch_video(MediaSource::...)` returns an `Arc<VideoClip>`, `VisionPreProcessor` has default `preprocess_video` / `preprocess_video_rgb` hooks, and `Modality::Video` flows through the same `PreprocessedEncoderInputs` contract (see `media.rs`, `vision/processor.rs`, `types.rs`).
 
 The worked example below mirrors the existing **Phi3-Vision** pair: `vision/processors/phi3_vision.rs` (`Phi3VisionProcessor`) and `registry/phi3_v.rs` (`Phi3VisionSpec`).
 
@@ -21,7 +21,7 @@ The worked example below mirrors the existing **Phi3-Vision** pair: `vision/proc
 
 ### Step 1: Implement the processor
 
-Implement `VisionPreProcessor` (`vision/processor.rs`). `preprocess` returns `PreprocessedEncoderInputs` built with `::new` (4D `[B,C,H,W]`) or `::new_dynamic` (5D, e.g. Phi3's `[B,num_crops+1,C,H,W]`), plus `.with_extra(key, ModelSpecificValue)` for model-specific tensors. Reuse `transforms` for resize/normalize.
+Implement `VisionPreProcessor` (`vision/processor.rs`). `preprocess` returns `PreprocessedEncoderInputs` built with `::new` — a single constructor generic over dimensionality that handles both 4D `[B,C,H,W]` and 5D (e.g. Phi3's `[B,num_crops+1,C,H,W]`) arrays via `into_dyn()` internally — plus `.with_extra(key, ModelSpecificValue)` for model-specific tensors. Reuse `transforms` for resize/normalize.
 
 **File:** `crates/multimodal/src/vision/processors/mymodel.rs`
 
@@ -87,7 +87,7 @@ registry.register("mymodel", Box::new(super::processors::MyModelProcessor::new()
 
 **Verify:** `cargo test -p llm-multimodal vision::processor::tests::test_registry_with_defaults`
 
-**Anti-pattern:** Registering a broad pattern (e.g. `"my"`) that also matches another model id. Register the most specific spec BEFORE more general ones (see how `qwen3-vl` precedes `qwen2-vl`).
+**Anti-pattern:** Registering a broad pattern (e.g. `"my"`) that also matches another model id. The processor registry is a `HashMap` (iteration order undefined), so use specific, non-overlapping id substrings — registration order does **not** disambiguate here. (Ordering *does* matter for the spec `Vec` registry in Step 4.)
 
 ### Step 3: Implement the spec
 
@@ -173,8 +173,8 @@ Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings.
 
 - Verify against `crates/multimodal/src/lib.rs` exports: content type is `MediaContentPart` (not `ChatContentPart`); the tracker yields `TrackerOutput`, not any `MultiModalInputs`.
 - `field_layouts` defaults to `pixel_values: Batched`. Override it (like `qwen3_vl.rs`) only for patchified/flat tensors, declaring the sizes tensor via `FieldLayout::flat("patches_per_image")`. The layout key stays the logical `"pixel_values"` HF/vLLM kwarg even though the struct field is `encoder_input`.
-- Use `new_dynamic` for a 5D `encoder_input`; the `channels`/`height`/`width` accessors error on non-4D/5D shapes.
-- Registry lookups are substring `contains` (processors) / `matches` (specs) — register specific patterns before general ones in both registries.
+- `PreprocessedEncoderInputs::new` is generic over dimensionality (calls `.into_dyn()`), so the same constructor takes 4D and 5D `encoder_input` arrays; the `channels`/`height`/`width` accessors error on non-4D/5D shapes.
+- Registry lookups are substring `contains` (processors) / `matches` (specs). Ordering is load-bearing only for the **spec** registry (`ModelRegistry.specs` is a `Vec`, first `matches` wins — so a specific spec like `Qwen3VLVisionSpec` must precede a general one like `QwenVLVisionSpec`). The **processor** registry is a `HashMap` with unspecified iteration order — there, correctness comes from specific, non-overlapping patterns, not registration order.
 - Processor and spec sets are NOT 1:1: `Phi4VisionProcessor` and `PixtralProcessor` exist (`vision/processors/`) with no registered `ModelProcessorSpec`. A processor without a spec preprocesses tensors but has no placeholder/prompt-expansion contract.
 - For video, override the `VisionPreProcessor::preprocess_video` / `preprocess_video_rgb` defaults (they error by default) and emit `Modality::Video` replacements via `prompt_replacements_for` (see `qwen3_vl.rs`).
 - All media flows through `MediaConnector`: honor `MediaConnectorConfig` (allowed_domains, `fetch_timeout` default 10s); images are Blake3-hashed (`hasher.rs`) for dedup.

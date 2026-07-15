@@ -114,7 +114,7 @@ Sections 7, 8, 9 always apply. Section 10 applies to PRs touching 3+ files or ad
 - [ ] Integration test for full flow
 - [ ] Existing test struct literals updated with new fields
 - [ ] E2E tests if user-facing behavior changes (in `e2e_test/` — tests run sequentially with class-scoped backends)
-- [ ] E2E test markers set: `@pytest.mark.engine(...)`, `@pytest.mark.gpu(count)`, `@pytest.mark.model(...)` as needed
+- [ ] E2E test markers set: `@pytest.mark.model(...)`, `@pytest.mark.workers(count=, gpus=, extra_engine_args=)`, `@pytest.mark.gateway(policy=)` as needed (marker set is `model`/`workers`/`gateway`/`e2e`/`slow` — see `e2e_test/conftest.py`)
 
 ### 9. Code Quality
 

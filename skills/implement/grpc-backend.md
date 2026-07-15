@@ -1,6 +1,8 @@
 # Adding a gRPC Backend Client to SMG
 
-gRPC clients live in the `smg-grpc-client` crate (one file per engine) and talk to an inference backend (SGLang, vLLM, TRT-LLM, MLX, TokenSpeed — TokenSpeed is the newest and a good template for a fresh engine). Each engine wraps its generated tonic client and shares connection/health/tokenizer/admin logic via four macros (see Step 1). The router layer (`model_gateway/src/routers/grpc/`) wraps all engines behind the `GrpcClient` enum and owns request building, streaming, and tool/reasoning parsing — the client crate does NOT parse output.
+gRPC clients live in the `smg-grpc-client` crate (one file per engine) and talk to an inference backend (SGLang, vLLM, TRT-LLM, MLX, TokenSpeed — TokenSpeed is the newest and a good template for a fresh engine). Each engine wraps its generated tonic client and shares connection/health/tokenizer/admin logic via four macros (see Step 1). The router layer (`model_gateway/src/routers/grpc/`) wraps all *generative* engines behind the `GrpcClient` enum and owns request building, streaming, and tool/reasoning parsing — the client crate does NOT parse output.
+
+> **Exception — `TokenSpeedEncoderClient` (`tokenspeed_encoder.rs`, proto `tokenspeed.grpc.encoder`).** A special-purpose EPD *encode* client that does **not** fit the engine pattern: it is not a `GrpcClient` enum variant, uses no `impl_engine_client_basics!`, and exposes a bespoke pooled `connect_cached` (round-robin over `ENCODE_CONNS_PER_ENDPOINT` channels) plus a single `encode()` RPC. It is called directly from the EPD encode stage (`routers/grpc/common/stages/encode.rs`), still injects trace context, and connects via `connect_channel`. If you are adding a generative engine, follow the enum pattern below; the encoder is its own thing.
 
 ## Inputs to gather first
 
@@ -90,7 +92,19 @@ Add a `Myengine(MyengineEngineClient)` variant, an arm in `connect()` (`"myengin
 - `get_loads()` — GetLoads RPC; currently supported for sglang/vllm/tokenspeed (those clients expose `get_loads`), and returns `Status::unimplemented` for the rest.
 - `subscribe_kv_events(start_seq)` — supported for sglang/vllm/trtllm/tokenspeed; MLX is explicitly unsupported. The KV-events consumer that drives this is `model_gateway/src/worker/kv_event_monitor.rs`.
 
-Request building, streaming, and tool/reasoning parsing live under `routers/grpc/regular/` and `utils/parsers.rs` — extend those, not the client crate.
+Request building, streaming, and tool/reasoning parsing live under `routers/grpc/regular/` and `utils/parsers.rs` — extend those, not the client crate. See the router-architecture note below for where these fit.
+
+## gRPC router architecture (Mode-parameterized pipeline)
+
+Regular, PD (prefill/decode), and EPD (encode/prefill/decode) serving were **unified into one `Mode`-parameterized router** — there is no longer a separate `pd_router.rs`. Understand this shape before touching request handling:
+
+- **`GrpcRouter` (`router.rs`)** — a single `struct GrpcRouter { mode: Mode, .. }` with `GrpcRouter::new(ctx, mode)` and one `impl RouterTrait`. Regular-only components (harmony/embedding/classify) are `Some` only in `Mode::Regular`. `RouterFactory::create_router` derives `mode = grpc_mode(cfg)` and calls `create_grpc_router(ctx, mode)`.
+- **`Mode` (`mode.rs`)** — `enum Mode { Regular, PrefillDecode, EncodePrefillDecode }` + `grpc_mode(&RouterConfig) -> Option<Mode>`. Each `Mode` maps to a `WorkerSelectionMode`, an `ExecutionPlanKind`, an `inject_pd_metadata()` flag, and a `router_type()` label (`"grpc"` / `"grpc_pd"` / `"grpc_epd"`).
+- **`RequestPipeline` (`pipeline.rs`)** — `RequestPipeline::build(endpoint, mode, deps)` composes a `Vec<Box<dyn PipelineStage>>` per endpoint, inserting `EncodeStage` only for EPD mode. A route method (e.g. `route_chat_impl`) builds the pipeline and runs the ordered stages.
+- **Shared stages (`common/stages/`)** — the `PipelineStage` trait plus `WorkerSelectionStage`, `ClientAcquisitionStage`, `DispatchMetadataStage`, `RequestExecutionStage`, and `EncodeStage` (the relocated EPD encode, formerly `epd_encode.rs`).
+- **Endpoint stages (`regular/`)** — per-endpoint request-building stages (`stages/chat|completion|generate|messages|embedding|classify/`), `processor.rs`, and `streaming.rs`. Despite the module name, `regular/` now backs **all** modes (Regular/PD/EPD).
+
+**When adding an engine (this recipe), you rarely touch the router internals** — the `Mode`/pipeline machinery is engine-agnostic. Add token-aware request building under `regular/stages/*` only if your engine needs endpoint-specific shaping.
 
 ### Step 4: Register in runtime detection
 
