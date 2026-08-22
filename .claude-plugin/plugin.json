@@ -1,12 +1,12 @@
 {
   "name": "smg",
-  "description": "4 process-enforcing skills for the Shepherd Model Gateway — orientation, implementation (with 19 subsystem recipes), PR review, and pre-ship quality gates",
+  "description": "4 process-enforcing skills for the Shepherd Model Gateway — orientation, implementation (with 20 subsystem recipes), PR review, and pre-ship quality gates",
   "version": "0.2.0",
   "author": {
     "name": "LightSeek"
   },
-  "homepage": "https://github.com/lightseekorg/smg-dev-guide",
-  "repository": "https://github.com/lightseekorg/smg-dev-guide",
+  "homepage": "https://github.com/smg-project/smg-dev-guide",
+  "repository": "https://github.com/smg-project/smg-dev-guide",
   "license": "Apache-2.0",
   "keywords": ["smg", "llm-gateway", "rust", "kubernetes", "routing", "grpc"],
   "skills": "./skills/",

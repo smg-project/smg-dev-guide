@@ -16,7 +16,7 @@ Storage backends live in `crates/data_connector/src/` as FLAT files (`memory.rs`
 
 **File:** `crates/data_connector/src/mybackend.rs`
 
-Define a `Clone` store handle, then three structs each taking `store: MybackendStore`. Implement the three async traits. Honor schema overrides with `schema.col("field")` / `schema.is_skipped("field")` and append hook-provided columns from `current_extra_columns()` + `resolve_extra_column_values(...)` on every write (see `redis.rs` create paths).
+Define a `Clone` store handle, then three structs each taking `store: MybackendStore`. Implement the three async traits. Honor schema overrides PER TABLE — `col` / `is_skipped` are methods on `TableConfig`, not on `SchemaConfig`: `let s = &self.store.schema.conversations;` then `s.col("field")` / `s.is_skipped("field")`. Append hook-provided columns from `current_extra_columns().unwrap_or_default()` + `resolve_extra_column_values(s, &hook_extra)` on every write (see `redis.rs` create paths).
 
 ```rust
 use std::sync::Arc;
@@ -83,7 +83,7 @@ Add `MybackendConfig` (mirror `RedisConfig`: connection field, `#[serde(default)
 
 ### Step 3: Migrations (SQL backends only)
 
-Key-value backends (redis) need none. SQL backends add a `mybackend_migrations.rs` + use `versioning.rs`, expose `init_schema` per struct, and a `run_migrations()` on the store that `create_storage` awaits (see `postgres.rs` `run_migrations` and `create_postgres_storage` in `factory.rs`).
+Key-value backends (redis) need none. SQL backends add a `mybackend_migrations.rs` (`static MYBACKEND_HISTORY_MIGRATIONS: [versioning::Migration; N]`) and create tables at startup — either in each struct's `async fn new(store) -> Result<Self, _>` (Postgres style) or via per-struct `init_schema(conn, schema)` fns passed to the store constructor (Oracle style) — then a `run_migrations()` on the store that the factory awaits once tables exist (see `create_postgres_storage` in `factory.rs`, which also re-runs `ensure_response_indexes()` when migrations applied). The runners in `versioning.rs` are dialect-specific (`run_postgres_migrations` / `run_oracle_migrations`); a new dialect adds its own.
 
 ### Step 4: Wire into the factory
 
@@ -103,15 +103,20 @@ HistoryBackend::Mybackend => {
 }
 ```
 
-Also add a `mybackend: Option<&'a MybackendConfig>` field to `StorageFactoryConfig` and update every existing `StorageFactoryConfig { .. }` literal (tests included) with `mybackend: None`.
+Also add a `mybackend: Option<&'a MybackendConfig>` field to `StorageFactoryConfig` and update every existing `StorageFactoryConfig { .. }` literal: the `factory.rs` tests, `crates/data_connector/tests/postgres_integration.rs` (compiled by `cargo test -p data-connector` even though its tests are `#[ignore]`), and `model_gateway/src/app_context.rs` — that last one is the only production literal and must pass `config.mybackend.as_ref()`, not `None`.
 
-### Step 5: Register the module + bindings
+### Step 5: Register the module + gateway/bindings wiring
 
-Add `mod mybackend;` to `lib.rs`. Expose the backend to Python by adding a `Mybackend` variant to `HistoryBackendType` in `bindings/python/src/lib.rs` and its `=> config::HistoryBackend::Mybackend` mapping arm (follow @bindings-update.md).
+Add `mod mybackend;` to `lib.rs`. The crate enum alone is unreachable — the gateway selects the backend outside `data_connector`, so wire it too:
+
+- `model_gateway/src/config/types.rs`: `mybackend: Option<MybackendConfig>` on `RouterConfig`, beside `oracle` / `postgres` / `redis`; `config/builder.rs`: a `maybe_mybackend` setter mirroring `maybe_redis`.
+- `model_gateway/src/main.rs`: add `"mybackend"` to the `--history-backend` `value_parser = [...]` (clap rejects anything else), a `"mybackend" => HistoryBackend::Mybackend` arm in the string `match` (its `_` arm silently means `Memory`), a `build_mybackend_config` arm in the `(oracle, postgres, redis)` tuple match, and `.maybe_mybackend(mybackend)` in the builder chain.
+- `model_gateway/src/app_context.rs`: `mybackend: config.mybackend.as_ref()` in its `StorageFactoryConfig` literal.
+- Python: a `Mybackend` variant on `HistoryBackendType` in `bindings/python/src/lib.rs` with its `=> config::HistoryBackend::Mybackend` arm, plus a `PyMybackendConfig` / `to_config_mybackend` threaded like `redis_config: Option<PyRedisConfig>`; add `"mybackend"` to the `--history-backend` `choices=[...]` in `bindings/python/src/smg/router_args.py` and a branch in `router.py:history_backend_from_str` (follow @bindings-update.md).
 
 ### Step 6: Tests
 
-Add `#[cfg(test)] mod tests` to `mybackend.rs` (round-trip each trait; cursor pagination via `ListParams`; not-found returns `Ok(None)`). Add a `create_storage` smoke test arm in `factory.rs` and a missing-config error test, mirroring `test_create_storage_redis_missing_config`.
+Add `#[cfg(test)] mod tests` to `mybackend.rs` (round-trip each trait; cursor pagination via `ListParams`; not-found returns `Ok(None)`). Add a `create_storage` smoke test arm in `factory.rs` and a missing-config error test, mirroring `test_create_storage_redis_missing_config`. A backend needing a live server gets an opt-in `#[ignore]` suite in `crates/data_connector/tests/mybackend_integration.rs` gated on an env URL — model on `tests/postgres_integration.rs` (`DATA_CONNECTOR_TEST_POSTGRES_URL`; `cargo test -p data-connector --test postgres_integration -- --ignored --test-threads=1`, which CI runs in `pr-test-rust.yml`).
 
 **Verify:** `cargo test -p data-connector`
 
@@ -119,5 +124,6 @@ Add `#[cfg(test)] mod tests` to `mybackend.rs` (round-trip each trait; cursor pa
 
 - Three structs / three traits, never a single `StorageBackend`. Hooks are wrapped by `create_storage`; the old `hooks.on_write/on_delete` calls do not exist.
 - Per-domain error enums — there is no unified `StorageError` type.
-- Respect `SchemaConfig` (`col`/`is_skipped`) and append `resolve_extra_column_values` on writes so tenancy/hook columns persist.
-- Package `data-connector` (v2.3.2).
+- Respect the per-table `TableConfig` (`col`/`is_skipped`) and append `resolve_extra_column_values` on writes so tenancy/hook columns persist.
+- The crate enum is not enough — a backend is unreachable until `model_gateway` (`main.rs` value_parser + match, `RouterConfig`, `builder.rs`, `app_context.rs`) and the Python launcher know its name.
+- Package `data-connector` (v2.3.3; depended on from the workspace as `smg-data-connector`).

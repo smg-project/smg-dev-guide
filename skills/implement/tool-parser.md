@@ -153,10 +153,9 @@ registry.register_parser("acme", || Box::new(AcmeParser::new()));
 ```
 And in `register_default_mappings`:
 ```rust
-registry.map_model("acme-*", "acme");
-registry.map_model("Acme/Acme-*", "acme");
+registry.map_model("acme-*", "acme"); // one spelling is enough — matching is case-insensitive
 ```
-Model resolution (`resolve_model_to_parser`): exact match first, then the **longest** trailing-`*` prefix wins. Put more specific patterns alongside general ones; length, not order, decides. Unmatched models fall back to the `passthrough` default.
+Model resolution (`resolve_model_to_parser`): exact match first, then the pattern's stem (trailing `*` stripped) is matched as a **case-insensitive substring** of the model ID; the **longest** matching stem wins — length, not order, decides. `acme-*` already covers `Acme/Acme-7B` and `org/acme-7b`, so don't add case or namespace variants. Pick a stem that cannot occur inside another family's ID (`nemotron-3*`, not `nemotron*`). Unmatched models fall back to the `passthrough` default.
 
 **Verify:** `cargo check -p tool-parser`
 
@@ -224,7 +223,10 @@ Invoke `smg:contribute` to run fmt → clippy → test → bindings → commit.
 | Pure JSON, no tags (OpenAI/Claude/Gemini) | `parsers/json.rs` (`json`) | Reuse `JsonParser`; just `map_model(... , "json")`, no new file |
 | Pythonic `[func(arg=val)]` (Llama 4) | `parsers/pythonic.rs` (`pythonic`) | Reuse `PythonicParser` |
 | Unicode-delimited blocks (DeepSeek) | `parsers/deepseek.rs`, `deepseek31.rs`, `deepseek_dsml.rs` | Custom token matching |
-| XML with `<parameter>` children | `parsers/qwen_xml.rs` (`QwenXmlParser`, keys `qwen_xml`/`qwen_coder`), `glm4_moe.rs` | Custom XML extraction, not `handle_json_tool_streaming` |
+| XML with `<parameter>` children (Qwen3-Coder/3.5+, Nemotron-3) | `parsers/qwen_xml.rs` (`QwenXmlParser`, keys `qwen_xml`/`qwen_coder`/`nemotron`) | Custom XML extraction, not `handle_json_tool_streaming` — for a new model with this exact format just `map_model` or alias-register `QwenXmlParser`, no new file |
+| XML `<arg_key>`/`<arg_value>` pairs (GLM-4.5/4.6 → `glm45_moe`, GLM-4.7/5 → `glm47_moe`) | `parsers/glm4_moe.rs` (`Glm4MoeParser::glm45()`/`::glm47()`) | Own parser, not the `<parameter>` format above; the two constructors share a struct and differ only in the func-detail regex |
 | Namespaced/pipe-delimited XML | `minimax_m2.rs` (`<minimax:tool_call>`), `step3.rs` (`steptml:`), `kimik2.rs` (`<\|tool_calls_section_begin\|>…`) | Read the parser for exact framing tokens — they are fragile; don't retype from memory |
+| Channel/marker token streams (Kimi-K3 XTML, Inkling TML) | `kimi_k3.rs` (`<\|open\|>tools<\|sep\|>…<\|open\|>call tool="NAME" index="N"<\|sep\|>`), `inkling.rs` (`<\|message_model\|>NAME<\|content_invoke_tool_json\|>{…}<\|end_message\|>`) | Compiled-`Regex` marker set (Kimi-K3) or a `StreamingState` machine (Inkling); both expose `build_structural_tag` |
+| Python-literal list of dicts `[{'name': …, 'arguments': {…}}]`, optional `<\|tool_calls\|>` prefix | `sarashina.rs` (`sarashina`) | Reuse `pythonic::{parse_python_expression, expression_to_json}`, not `serde_json` — a different grammar from `pythonic.rs`'s `[func(arg=val)]` |
 
-Current parsers (factory keys): `passthrough`, `json`, `mistral`, `qwen`, `qwen_xml`, `qwen_coder`, `pythonic`, `llama`, `deepseek`, `deepseek31`, `deepseek32`, `deepseek_v4`, `glm45_moe`, `glm47_moe`, `step3`, `kimik2`, `minimax_m2`, `cohere`.
+Current parsers (factory keys): `passthrough`, `json`, `mistral`, `qwen`, `qwen_xml`, `qwen_coder`, `nemotron`, `pythonic`, `llama`, `deepseek`, `deepseek31`, `deepseek32`, `deepseek_v4`, `glm45_moe`, `glm47_moe`, `step3`, `sarashina`, `kimik2`, `kimi_k3`, `inkling`, `minimax_m2`, `cohere`. The four that expose a structural tag (`mistral`, `kimik2`, `kimi_k3`, `inkling`) register via `register_parser_with_structural_tag(name, ctor, Parser::build_structural_tag)` instead of `register_parser`.

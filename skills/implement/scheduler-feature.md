@@ -29,7 +29,7 @@ It is **off by default**: `priority_scheduler_enabled = false` keeps the legacy 
 
 These four are the only scheduler knobs not in the YAML (`enabled`, `default_max_class`, `tenant_metric_top_n` are CLI-only; see `SchedulerSettings::from_cli_and_yaml`). `--priority-scheduler-config` is optional: an empty/absent file means every class uses `ClassConfig::default_for`.
 
-**Verify:** `cargo run -p smg -- --help | rg priority-scheduler`
+**Verify:** `cargo run -p smg --bin smg -- --help | rg priority-scheduler` (`--bin smg` is required — the package declares two bins, `smg` and `amg`, and no `default-run`)
 
 **Anti-pattern:** Setting `--max-concurrent-requests 0` and expecting the scheduler to use it as capacity. It only feeds the `WorkerCapacity` tier-4 fallback (`state.rs::try_build_priority`); real capacity is read live from `WorkerCapacity`.
 
@@ -44,7 +44,7 @@ classes:
     reserved_floor: 128          # u16, absolute min slots; never drops below this
     reserved_per_slot: 0.25      # f64 >= 0, finite; effective = max(floor, ceil(share * capacity))
     queue_size: 256              # u32, per-class queue depth -> 429 when full
-    queue_timeout_secs: 30       # u64 > 0; waiter past this -> 408
+    queue_timeout_secs: 30       # u64 > 0; waiter past this -> 503 + Retry-After: 2
     starvation_threshold_secs: 5 # u64 > 0; head-of-queue age the dispatcher promotes past
     can_preempt: true            # may cancel a lower-class pre-TTFT request
   bulk:
@@ -62,11 +62,11 @@ tenant_policies:
     max_class: system
 ```
 
-Every field of `ClassConfig` is required when a class appears (only `reserved_per_slot` has `#[serde(default)]`). Tenant keys must match `RouteRequestMeta::tenant_key()` (`model_gateway/src/tenant.rs`), e.g. `auth:<id>`.
+Every field of `ClassConfig` is required when a class appears (only `reserved_per_slot` has `#[serde(default)]`). Tenant keys must match `RouteRequestMeta::tenant_key()` (`model_gateway/src/tenant.rs`). A readable `auth:<id>` only exists for per-tenant keys (`--tenant-api-key <id>:<secret>`, `middleware/auth.rs::AuthConfig::with_tenant_keys`); the shared `--api-key` yields `auth:<sha256-hex>`, a trusted tenant header yields `header:<id>`, otherwise `ip:<addr>` or `anonymous` (`middleware/tenant_resolution.rs::resolve_raw_tenant_key`). Scheduler keys are never validated at startup — a typo silently never matches.
 
 **Verify:** `cargo test -p smg scheduler::config` (the `PrioritySchedulerYaml` serde + `SchedulerSettings::from_cli_and_yaml` validation tests cover this exact shape).
 
-**Anti-pattern:** Capitalized class keys (`System:`) or an unknown `max_class` value — both are hard serde errors (`test_yaml_unknown_class_value_is_serde_error`). Also: trying to encode capacity-vs-reservation limits in YAML; reservations are clamped to live capacity priority-ordered, so there is nothing to reject there (`SettingsValidationError` only flags zero timeouts / non-finite shares).
+**Anti-pattern:** Capitalized class keys (`System:`) or an unknown `max_class` value — both are hard serde errors (`test_yaml_unknown_class_value_is_serde_error`). Also: trying to encode capacity-vs-reservation limits in YAML; reservations are clamped to live capacity priority-ordered, so there is nothing to reject there (`SettingsValidationError` only flags a zero `queue_timeout_secs`/`starvation_threshold_secs` and a non-finite or negative `reserved_per_slot`).
 
 ### Step 3 (extension): Custom `ClassQueue` discipline
 
@@ -144,7 +144,7 @@ Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings -> commit.
 - **Four fixed classes**, never add one — `Class` is `#[repr(u8)]` with numeric values packed into an `AtomicU64` slot count and indexed `class as usize` across `slots`, `engine.class_queues[4]`, and `SchedulerSettings.classes[4]`. Adding a variant breaks all four-element arrays.
 - The tenant clamp is `min(header_class, max_class)` (`admission.rs::resolve_priority`); a low-tier tenant cannot self-promote via `X-SMG-Priority`. An unknown header value silently degrades to `Class::Default` (`class.rs::parse_header`).
 - `ClassQueue` and `TenantPolicyResolver` are both **sync** `Send + Sync` traits. No `#[async_trait]`, no `async fn` — they run on the admission hot path. Queue state uses `parking_lot::Mutex`, not `tokio::sync::Mutex`.
-- `admit(class, request_id, cancel) -> AdmitOutcome` (`engine.rs`) is the entry point: `Admitted(SchedulerPermit)` or `Rejected(RejectionReason)`. The four `RejectionReason` variants map 1:1 to HTTP in `error.rs`: `QueueFull`->429, `QueueTimeout`->408, `Preempted`->503 (`X-SMG-Preempted` + `Retry-After`), `ClientCancelled`->499. Don't add a reason without an `error.rs` arm.
+- `admit(class, request_id, cancel) -> AdmitOutcome` (`engine.rs`) is the entry point: `Admitted(SchedulerPermit)` or `Rejected(RejectionReason)`. The four `RejectionReason` variants map 1:1 to HTTP in `error.rs`: `QueueFull`->429 + `Retry-After: 2`, `QueueTimeout`->503 + `Retry-After: 2` (both `middleware::SHED_RETRY_AFTER_SECS`; 408 was dropped because proxies retry it instantly), `Preempted`->503 (`X-SMG-Preempted: true` + `Retry-After: 1`), `ClientCancelled`->499. Don't add a reason without an `error.rs` arm.
 - `SchedulerPermit` is RAII — dropping it releases the slot, deregisters the inflight handle, and notifies the dispatcher. `admission.rs` wraps the response body in `SchedulerGuardBody` so the permit lives exactly as long as the response stream.
 - Reservation math is `effective = max(reserved_floor, ceil(reserved_per_slot * capacity))`, recomputed on every capacity change; capacity is read live from `WorkerCapacity`, never stored in `SchedulerSettings`. Don't hardcode capacity assumptions in YAML.
 - Settings are built once at startup and read-only. Editing the YAML requires a restart.
