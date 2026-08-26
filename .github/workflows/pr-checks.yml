@@ -56,7 +56,7 @@ jobs:
             if ! git log -1 --format='%B' "$sha" | grep -q '^Signed-off-by:'; then
               MISSING="${MISSING}  $(git log -1 --format='%h %s' "$sha")"$'\n'
             fi
-          done < <(git rev-list "origin/${BASE}..HEAD")
+          done < <(git rev-list --no-merges "origin/${BASE}..HEAD")
 
           if [ -n "$MISSING" ]; then
             echo "::error::Every commit needs a Signed-off-by trailer (git commit -s)."
@@ -73,7 +73,7 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
         run: |
-          FORBIDDEN=$(git log --format='%B' "origin/${BASE}..HEAD" | \
+          FORBIDDEN=$(git log --no-merges --format='%B' "origin/${BASE}..HEAD" | \
             grep -iE "^(Co-authored-by|Signed-off-by):.*(Claude|noreply@anthropic\.com)" || true)
 
           if [ -n "$FORBIDDEN" ]; then
