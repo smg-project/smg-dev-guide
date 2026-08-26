@@ -1,0 +1,157 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    name: Pre-commit hooks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit checks
+        env:
+          # Both are local git-stage hooks (commit-msg / pre-push) and cannot
+          # run over a checkout. The commit-messages job below covers DCO;
+          # branch naming is enforced there too.
+          SKIP: dco-check,branch-name-check
+        run: pre-commit run --all-files --show-diff-on-failure
+
+  commit-messages:
+    name: DCO sign-off and attribution
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check every commit is DCO signed off
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          MISSING=""
+          while read -r sha; do
+            [ -z "$sha" ] && continue
+            if ! git log -1 --format='%B' "$sha" | grep -q '^Signed-off-by:'; then
+              MISSING="${MISSING}  $(git log -1 --format='%h %s' "$sha")"$'\n'
+            fi
+          done < <(git rev-list --no-merges "origin/${BASE}..HEAD")
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::Every commit needs a Signed-off-by trailer (git commit -s)."
+            echo ""
+            echo "Commits missing sign-off:"
+            echo "$MISSING"
+            echo "Fix with: git rebase HEAD~N --signoff && git push --force-with-lease"
+            exit 1
+          fi
+
+          echo "All commits are signed off."
+
+      - name: Check commit messages for forbidden AI co-authors
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          FORBIDDEN=$(git log --no-merges --format='%B' "origin/${BASE}..HEAD" | \
+            grep -iE "^(Co-authored-by|Signed-off-by):.*(Claude|noreply@anthropic\.com)" || true)
+
+          if [ -n "$FORBIDDEN" ]; then
+            echo "::error::Commit messages must not reference Claude or noreply@anthropic.com in Co-authored-by/Signed-off-by lines."
+            echo ""
+            echo "Offending lines:"
+            echo "$FORBIDDEN"
+            echo ""
+            echo "Please amend the offending commits to remove these lines."
+            exit 1
+          fi
+
+          echo "No forbidden AI co-author/sign-off lines found."
+
+  branch-name:
+    name: Branch naming convention
+    runs-on: ubuntu-latest
+    # Only enforce on internal PRs, not forks.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == 'smg-project/smg-dev-guide'
+    permissions:
+      contents: read
+    steps:
+      - name: Validate branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          case "$BRANCH" in
+            setup/*|feat/*|fix/*|docs/*|chore/*|refactor/*)
+              echo "Branch name '$BRANCH' is valid."
+              ;;
+            *)
+              echo "::error::Branch name must match: setup/*, feat/*, fix/*, docs/*, chore/*, refactor/*"
+              echo ""
+              echo "Got: $BRANCH"
+              echo ""
+              echo "Rename it locally, push the new branch, and open a new PR:"
+              echo "  git branch -m <new-branch-name>"
+              echo "  git push origin -u <new-branch-name>"
+              exit 1
+              ;;
+          esac
+
+  finish:
+    # Aggregate gate. The `main` ruleset requires the `finish` context, so this
+    # job is what actually blocks merge on the jobs above. Add every new job in
+    # this workflow to `needs` and to the result check below, or it silently
+    # stops gating.
+    name: finish
+    needs: [pre-commit, commit-messages, branch-name]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check CI result
+        run: |
+          # `skipped` is allowed: commit-messages and branch-name do not run on
+          # push, and branch-name is skipped for fork PRs.
+          failed=""
+          for r in "pre-commit=${{ needs.pre-commit.result }}" \
+                   "commit-messages=${{ needs.commit-messages.result }}" \
+                   "branch-name=${{ needs.branch-name.result }}"; do
+            name=${r%%=*}
+            result=${r#*=}
+            case "$result" in
+              failure|cancelled)
+                failed="${failed}  ${name}: ${result}"
+                ;;
+            esac
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::One or more PR checks did not pass."
+            echo ""
+            echo "$failed"
+            exit 1
+          fi
+
+          echo "All PR checks passed."
