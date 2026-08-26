@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "smg",
-      "description": "4 process-enforcing skills for the Shepherd Model Gateway — orientation, implementation (with 19 subsystem recipes), PR review, and pre-ship quality gates",
+      "description": "4 process-enforcing skills for the Shepherd Model Gateway — orientation, implementation (with 20 subsystem recipes), PR review, and pre-ship quality gates",
       "version": "0.2.0",
       "source": "./",
       "author": {

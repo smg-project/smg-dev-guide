@@ -6,14 +6,14 @@ Image preprocessing for vision LLMs lives in the `llm-multimodal` crate (lib `ll
 
 ```
 MediaContentPart (Text | ImageUrl | ImageData | ImageEmbeds | AudioUrl | AudioData | VideoUrl | VideoData)   // types.rs
-  -> MediaConnector::fetch_image(MediaSource::{Url,DataUrl,InlineBytes,File})  // media.rs, Blake3 hash
+  -> MediaConnector::fetch_image(MediaSource::{Url,DataUrl,InlineBytes,File}, ImageFetchConfig { detail })  // media.rs, Blake3 hash
   -> Arc<ImageFrame> { image: DynamicImage, raw_bytes, detail, source, hash }
   -> VisionPreProcessor::preprocess(&[DynamicImage], &PreProcessorConfig) -> PreprocessedEncoderInputs
   -> ModelProcessorSpec::prompt_replacements(...) -> Vec<PromptReplacement>  // expands placeholder tokens
   -> tracker emits TrackerOutput { data: MultiModalData, uuids: MultiModalUUIDs }
 ```
 
-Video is a first-class modality: `MediaConnector::fetch_video(MediaSource::...)` returns an `Arc<VideoClip>`, `VisionPreProcessor` has default `preprocess_video` / `preprocess_video_rgb` hooks, and `Modality::Video` flows through the same `PreprocessedEncoderInputs` contract (see `media.rs`, `vision/processor.rs`, `types.rs`).
+Video is a first-class modality: `MediaConnector::fetch_video(MediaSource::..., VideoFetchConfig { min_frames, max_frames, sample_fps })` returns an `Arc<VideoClip>`, `VisionPreProcessor` has default `preprocess_video` / `preprocess_video_rgb` hooks, and `Modality::Video` flows through the same `PreprocessedEncoderInputs` contract (see `media.rs`, `vision/processor.rs`, `types.rs`).
 
 The worked example below mirrors the existing **Phi3-Vision** pair: `vision/processors/phi3_vision.rs` (`Phi3VisionProcessor`) and `registry/phi3_v.rs` (`Phi3VisionSpec`).
 
@@ -79,7 +79,7 @@ pub mod mymodel;
 pub use mymodel::MyModelProcessor;
 ```
 
-Then add it to `VisionProcessorRegistry::with_defaults()` in `vision/processor.rs`, registering every lowercase id substring the model uses (matching is case-insensitive `contains`):
+Then add it to `VisionProcessorRegistry::with_defaults()` in `vision/processor.rs`, registering every lowercase id substring the model uses **plus the HF `config.json` `model_type` string** (e.g. `"phi3_v"`, `"kimi_k3"`). `VisionProcessorRegistry::find(model_id, model_type)` matches case-insensitive `contains` on the id and falls back to `model_type`, so a processor registered only under marketing ids is never found for renamed or custom checkpoints:
 
 ```rust
 registry.register("mymodel", Box::new(super::processors::MyModelProcessor::new()));
@@ -91,7 +91,7 @@ registry.register("mymodel", Box::new(super::processors::MyModelProcessor::new()
 
 ### Step 3: Implement the spec
 
-Implement `ModelProcessorSpec` (`registry/traits.rs`). `matches` is keyed by `ModelMetadata { model_id, tokenizer, config }`; pull token ids from `metadata.token_id(...)` or `metadata.config_u32(&["image_token_id"])`. `prompt_replacements` builds one `PromptReplacement` per image, expanding the placeholder to `feature_token_counts` copies.
+Implement `ModelProcessorSpec` (`registry/traits.rs`). `matches` is keyed by `ModelMetadata { model_id, tokenizer, config }`; pull token ids from `metadata.token_id(...)` or `metadata.config_u32(&["image_token_id"])`. `prompt_replacements` builds one `PromptReplacement` per image, expanding the placeholder to `feature_token_counts` copies. `modality_limits` is a default, not a hard cap: `validate_media_request` (`registry/traits.rs`) lets a deployment raise or lower it via `SMG_IMAGE_MAX_COUNT` / `SMG_VIDEO_MAX_COUNT` / `SMG_AUDIO_MAX_COUNT`, but an override never enables a modality the spec did not declare.
 
 **File:** `crates/multimodal/src/registry/mymodel.rs`
 
@@ -99,9 +99,9 @@ Implement `ModelProcessorSpec` (`registry/traits.rs`). `matches` is keyed by `Mo
 use std::collections::HashMap;
 use serde_json::{json, Value};
 use crate::{
+    encoder_inputs::PreprocessedEncoderInputs,
     registry::{ModelMetadata, ModelProcessorSpec, RegistryResult},
     types::{Modality, PromptReplacement, TokenId},
-    vision::processor::PreprocessedEncoderInputs,
 };
 
 pub(super) struct MyModelSpec;
@@ -167,14 +167,14 @@ LazySpec::new(|| Box::new(MyModelSpec)),
 
 ### Step 5: Quality gate
 
-Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings.
+Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings. Clippy runs `--all-features`, which turns on this crate's `opencv-video` feature and needs system OpenCV — run `make opencv-deps` (`scripts/install_opencv.sh`) once first.
 
 ## Critical Rules
 
 - Verify against `crates/multimodal/src/lib.rs` exports: content type is `MediaContentPart` (not `ChatContentPart`); the tracker yields `TrackerOutput`, not any `MultiModalInputs`.
-- `field_layouts` defaults to `pixel_values: Batched`. Override it (like `qwen3_vl.rs`) only for patchified/flat tensors, declaring the sizes tensor via `FieldLayout::flat("patches_per_image")`. The layout key stays the logical `"pixel_values"` HF/vLLM kwarg even though the struct field is `encoder_input`.
+- `field_layouts` defaults to `{"pixel_values": Batched}` and **any key not listed is treated as shared — replicated across every media item** (`registry/traits.rs:ModelProcessorSpec::field_layouts`; `model_gateway/src/routers/grpc/zmq_multimodal.rs`: batched keys index row `i`, flat keys slice by the cumulative sizes tensor, everything else is shared). So declare **every** per-item `model_specific` side tensor as `Batched` (Phi3-Vision: `image_sizes`; Qwen3-VL: `image_grid_thw`, `patches_per_image`), and reserve `FieldLayout::flat("patches_per_image")` for a patchified/flat `pixel_values` (see `qwen3_vl.rs`). The layout key stays the logical `"pixel_values"` HF/vLLM kwarg even though the struct field is `encoder_input`. That map is the legacy shape: multi-modality specs override `encoder_field_layouts_for(modality) -> EncoderFieldLayouts` instead (`registry/qwen3_omni.rs`, `registry/qwen3_asr.rs`, `registry/inkling.rs`), and the trait default bridges via `EncoderFieldLayouts::from_legacy_fields(self.field_layouts())`.
 - `PreprocessedEncoderInputs::new` is generic over dimensionality (calls `.into_dyn()`), so the same constructor takes 4D and 5D `encoder_input` arrays; the `channels`/`height`/`width` accessors error on non-4D/5D shapes.
 - Registry lookups are substring `contains` (processors) / `matches` (specs). Ordering is load-bearing only for the **spec** registry (`ModelRegistry.specs` is a `Vec`, first `matches` wins — so a specific spec like `Qwen3VLVisionSpec` must precede a general one like `QwenVLVisionSpec`). The **processor** registry is a `HashMap` with unspecified iteration order — there, correctness comes from specific, non-overlapping patterns, not registration order.
 - Processor and spec sets are NOT 1:1: `Phi4VisionProcessor` and `PixtralProcessor` exist (`vision/processors/`) with no registered `ModelProcessorSpec`. A processor without a spec preprocesses tensors but has no placeholder/prompt-expansion contract.
-- For video, override the `VisionPreProcessor::preprocess_video` / `preprocess_video_rgb` defaults (they error by default) and emit `Modality::Video` replacements via `prompt_replacements_for` (see `qwen3_vl.rs`).
-- All media flows through `MediaConnector`: honor `MediaConnectorConfig` (allowed_domains, `fetch_timeout` default 10s); images are Blake3-hashed (`hasher.rs`) for dedup.
+- For video, all four pieces are required (see `qwen3_vl.rs`): add `Modality::Video` to `modality_limits`; override `placeholder_token_for` / `placeholder_token_id_for`, whose defaults return `UnsupportedModality` for anything but `Image` and which `model_gateway/src/routers/grpc/multimodal/plan.rs` + `process.rs` call *before* expansion; override the erroring `VisionPreProcessor::preprocess_video` / `preprocess_video_rgb` defaults; emit `Modality::Video` replacements from `prompt_replacements_for`. Miss any one and video requests fail at planning.
+- All media flows through `MediaConnector`: honor `MediaConnectorConfig` (`allowed_domains`; `allowed_local_media_path`, which gates `MediaSource::File` — otherwise `MediaConnectorError::DisallowedLocalPath`; `fetch_timeout` default 10s); image, video and audio bytes are Blake3-hashed (`hasher.rs`) for dedup.

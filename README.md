@@ -1,6 +1,6 @@
 # SMG Dev Guide
 
-AI-powered development guide for the [Shepherd Model Gateway](https://github.com/lightseekorg/smg) — 4 process-enforcing skills that change what your AI coding agent **does**, not just what it **knows**.
+AI-powered development guide for the [Shepherd Model Gateway](https://github.com/smg-project/smg) — 4 process-enforcing skills that change what your AI coding agent **does**, not just what it **knows**.
 
 Works with **Google Antigravity**, **Gemini CLI**, **Claude Code**, **Codex**, and **Cursor**.
 
@@ -13,7 +13,7 @@ Works with **Google Antigravity**, **Gemini CLI**, **Claude Code**, **Codex**, a
 **Global**: To make these skills and workflows available across all projects, copy or symlink them into your global Antigravity `~/.gemini/antigravity/` directory:
 
 ```bash
-git clone https://github.com/lightseekorg/smg-dev-guide.git ~/.gemini/antigravity/repos/smg-dev-guide
+git clone https://github.com/smg-project/smg-dev-guide.git ~/.gemini/antigravity/repos/smg-dev-guide
 mkdir -p ~/.gemini/antigravity/workflows ~/.gemini/antigravity/skills
 ln -s ~/.gemini/antigravity/repos/smg-dev-guide/.agents/workflows/* ~/.gemini/antigravity/workflows/
 ln -s ~/.gemini/antigravity/repos/smg-dev-guide/skills/* ~/.gemini/antigravity/skills/
@@ -25,12 +25,12 @@ The Gemini CLI natively supports Agent Skills. You can install these skills dire
 
 **Global Installation (Available in all projects)**:
 ```bash
-gemini skills install https://github.com/lightseekorg/smg-dev-guide.git
+gemini skills install https://github.com/smg-project/smg-dev-guide.git
 ```
 
 **Workspace Installation (Only in current project)**:
 ```bash
-gemini skills install https://github.com/lightseekorg/smg-dev-guide.git --scope workspace
+gemini skills install https://github.com/smg-project/smg-dev-guide.git --scope workspace
 ```
 
 ### Claude Code
@@ -38,14 +38,14 @@ gemini skills install https://github.com/lightseekorg/smg-dev-guide.git --scope 
 From the shell:
 
 ```bash
-claude plugin marketplace add lightseekorg/smg-dev-guide
+claude plugin marketplace add smg-project/smg-dev-guide
 claude plugin install smg@smg-dev-guide
 ```
 
 Or inside Claude Code:
 
 ```
-/plugin marketplace add lightseekorg/smg-dev-guide
+/plugin marketplace add smg-project/smg-dev-guide
 /plugin install smg@smg-dev-guide
 ```
 
@@ -56,7 +56,7 @@ Run `/reload-plugins` (or restart Claude Code) to load the skills.
 Copy or symlink the skills into your user skills directory:
 
 ```bash
-git clone https://github.com/lightseekorg/smg-dev-guide.git ~/.agents/repos/smg-dev-guide
+git clone https://github.com/smg-project/smg-dev-guide.git ~/.agents/repos/smg-dev-guide
 ln -s ~/.agents/repos/smg-dev-guide/.agents/skills/* ~/.agents/skills/
 ```
 
@@ -75,14 +75,14 @@ Install as a Cursor plugin via `.cursor-plugin/plugin.json`.
 | `map` | Orient | Crate map, layering rules, config propagation, request flow, label pipeline |
 | `implement` | Build | Detects subsystem, loads recipe, creates tasks, enforces step-by-step execution with verification |
 | `review-pr` | Review | Maps changed files to checklist sections, creates review tasks per subsystem, cites file:line |
-| `contribute` | Ship | 5-step quality gate (fmt → clippy → test → bindings → commit format) with enforcement |
+| `contribute` | Ship | 6-step quality gate (fmt → clippy → test → hooks → python/go → names and commits) with enforcement |
 
 **Google Antigravity** — invoke workflows using slash commands in the chat:
 ```
 /map                         → discover codebase structure and ownership
 /implement-feature           → guides you through building a feature
 /review-pr                   → checks your work against anti-patterns
-/verify-pr                   → runs the full 5-step quality gate
+/verify-pr                   → runs the full 6-step quality gate
 ```
 
 **Gemini CLI** — skills trigger automatically based on your prompt:
@@ -110,7 +110,7 @@ Unlike passive reference docs, these skills **enforce workflows**:
 - **Hard Gates** block progression without prerequisites (e.g. must identify touched subsystems before reviewing)
 - **Rationalization Tables** counter common excuses for cutting corners
 - **Skill Chaining** ensures `implement` → `contribute` → `review-pr` flow
-- **19 Implementation Recipes** provide step-by-step guidance with exact file paths, code patterns, and verification commands for every subsystem
+- **20 Implementation Recipes** provide step-by-step guidance with exact file paths, code patterns, and verification commands for every subsystem
 
 ## Implementation Recipes
 
@@ -120,11 +120,12 @@ Unlike passive reference docs, these skills **enforce workflows**:
 |--------|-----------|
 | config-plumbing | CLI flags, config fields, the critical two-path rule |
 | routing-policy | Load balancing, dual HTTP/gRPC mode |
-| tool-parser | Tool/function call formats (14) |
-| reasoning-parser | Reasoning extraction (8 model families) |
+| tool-parser | Tool/function call formats (18 parsers) |
+| reasoning-parser | Reasoning extraction (10 model families) |
 | bindings-update | Python PyO3 + Go FFI |
 | discovery-feature | K8s discovery, label pipeline |
 | grpc-backend | gRPC client, trace injection |
+| zmq-backend | Direct `ipc://` ZMQ engines (vLLM EngineCore, TokenSpeed) |
 | storage-backend | Data connectors, hooks |
 | wasm-plugin | WASM middleware, WIT interface |
 | auth-feature | API keys, JWT/OIDC |
@@ -135,7 +136,7 @@ Unlike passive reference docs, these skills **enforce workflows**:
 | multimodal-feature | Vision processors, media pipeline |
 | scheduler-feature | Priority admission: classes, queues, reservations, preemption |
 | tenancy-feature | Multi-tenant identity, tenant resolution, per-tenant state |
-| rate-limit-feature | Token-bucket rate limiting + concurrency caps |
+| rate-limit-feature | Token-bucket rate limiting, concurrency caps, per-tenant quotas |
 | provider-api | Provider-compatible API routers (Anthropic, Gemini) |
 
 ## Directory Structure
@@ -149,7 +150,7 @@ skills/                  # Skill source files
   map/SKILL.md
   contribute/SKILL.md
   review-pr/SKILL.md
-  implement/SKILL.md     # + 19 recipe files
+  implement/SKILL.md     # + 20 recipe files
 commands/                # Claude Code /smg command router
   smg.md
 ```

@@ -22,7 +22,7 @@ Do NOT write implementation code until you have:
 3. Created a task for each step in the recipe
 </HARD-GATE>
 
-**Escape hatch:** Single-file changes under 20 lines that don't touch `config/types.rs`, `crates/protocols/`, `main.rs` (CliArgs or conversion functions), or `bindings/` may skip the full recipe. You MUST still chain to `smg:contribute` before PR.
+**Escape hatch:** Single-file changes under 20 lines that don't touch `config/types.rs`, `crates/protocols/`, `main.rs` (CliArgs or conversion functions), `bindings/`, or `crates/engine_zmq_client/src/protocol/` (positional msgpack — field order is the wire contract, append only) may skip the full recipe. You MUST still chain to `smg:contribute` before PR.
 
 ## Detection Table
 
@@ -34,7 +34,8 @@ Do NOT write implementation code until you have:
 | Reasoning, thinking, chain-of-thought parser | @reasoning-parser.md |
 | Python binding, Go SDK, FFI, PyO3, maturin | @bindings-update.md |
 | K8s, service discovery, pod, worker lifecycle, label | @discovery-feature.md |
-| gRPC, backend client, tonic, streaming | @grpc-backend.md |
+| gRPC, backend client, tonic, streaming (an `ipc://` worker is ZMQ, next row) | @grpc-backend.md |
+| ZMQ, `ipc://` worker, direct backend, EngineCore, headless vLLM/TokenSpeed, handshake, msgpack wire, `zmq_engine_count`, grouped engine worker | @zmq-backend.md |
 | Storage, database, PostgreSQL, Oracle, Redis, data connector | @storage-backend.md |
 | WASM, WebAssembly, plugin, middleware hook | @wasm-plugin.md |
 | Auth, API key, JWT, OIDC, role, permission | @auth-feature.md |
@@ -46,7 +47,7 @@ Do NOT write implementation code until you have:
 | Provider-compatible API router (Anthropic /v1/messages, Gemini /v1/interactions), RoutingMode variant, new API surface | @provider-api.md |
 | Priority scheduler, admission, preemption, queue, reservation, autoscaling | @scheduler-feature.md |
 | Multi-tenancy, tenant, tenant policy, tenant resolution | @tenancy-feature.md |
-| Rate limit, token bucket, concurrency cap | @rate-limit-feature.md |
+| Rate limit, token bucket, concurrency cap, per-tenant token/request quota, reserve/settle | @rate-limit-feature.md |
 
 ### Subsystems without a dedicated recipe yet
 
@@ -55,13 +56,16 @@ These are real, actively-developed subsystems that don't yet have a step-by-step
 | Signal in User Request | Where it lives |
 |------------------------|----------------|
 | Provider API: Responses, Conversations, Realtime (for Anthropic/Gemini-style API routers see @provider-api.md) | `model_gateway/src/routers/{responses,conversations,common/realtime}/` |
+| Tokenizer, chat template, prompt renderer/encoder, stop sequence, EOS | `crates/tokenizer/src/` (`encoders/`, `huggingface.rs::detect_renderer_from_config`, `stop.rs`, `eos.rs`, `registry.rs`); gateway side `model_gateway/src/workflow/tokenizer_registration.rs`, `routers/tokenize/`; `cargo test -p llm-tokenizer` |
+| Workflow engine, registration step, DAG, job queue | `crates/workflow/` (the `wfaas` crate: `StepExecutor`, `StepDefinition`, `StepResult`) plus `model_gateway/src/workflow/steps/{local,shared,external}/` wired in `steps/mod.rs`, and `workflow/job_queue.rs` |
+| E2E test, pytest harness, CI lane, kind discovery | `e2e_test/` — markers and filtering in `fixtures/hooks.py`, backends in `fixtures/setup_backend.py`, launchers in `infra/worker.py`; harness units `PYTHONPATH=e2e_test pytest -q --noconftest e2e_test/infra e2e_test/fixtures`; `SMG_KIND_E2E=1 pytest e2e_test/kind_discovery -m kind` |
 | Client SDK generation | `clients/openapi-gen/` (`make generate-clients`) |
 
 **If multiple match:** Load all matching recipes. `config-plumbing.md` almost always co-triggers with other recipes (most features need a config field).
 
 **If none match:** This is a novel change. Read the codebase architecture with `smg:map` first, then follow the general pattern: implement → test → verify → chain to `smg:contribute`.
 
-All recipes were rewritten and verified against the codebase (2026-06; re-verified against HEAD 2026-07-15). They reflect current trait/type names and paths; still run each recipe's `cargo check`/`cargo test` step as you go.
+All recipes were rewritten and verified against the codebase (2026-06; re-verified against HEAD 732a42bf, post-v1.9.0, 2026-08-22). They reflect current trait/type names and paths; still run each recipe's `cargo check`/`cargo test` step as you go.
 
 ## Process
 
@@ -95,6 +99,6 @@ All recipes were rewritten and verified against the codebase (2026-06; re-verifi
 
 ## Skill Chaining
 
-When implementation is complete: **invoke `smg:contribute`** to run the 5-step quality gate before PR.
+When implementation is complete: **invoke `smg:contribute`** to run the 6-step quality gate before PR.
 
 Before submitting: self-review with `smg:review-pr`.
