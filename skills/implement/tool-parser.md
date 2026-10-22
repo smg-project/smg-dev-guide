@@ -161,13 +161,12 @@ Model resolution (`resolve_model_to_parser`): exact match first, then the patter
 
 ### Step 4: Write integration tests
 
-**File:** `crates/tool_parser/tests/tool_parser_acme.rs` (model on `tests/tool_parser_mistral.rs`)
+**File:** `crates/tool_parser/tests/models/tool_parser_acme.rs` (model on `tests/models/tool_parser_mistral.rs`), declared in `tests/models/mod.rs` with `mod tool_parser_acme;`. The model-family parsers' tests share the `models_tests` binary (the formats' tests share `formats_tests`); a file created directly under `tests/` would be a test binary of its own, linking the crate graph again.
 
 ```rust
-mod common;
-
-use common::create_test_tools;
 use tool_parser::{AcmeParser, ToolParser};
+
+use crate::common::create_test_tools; // the group's root declares `common` once
 
 #[tokio::test]
 async fn test_complete_single() {
@@ -193,9 +192,9 @@ async fn test_streaming() {
 }
 ```
 
-Add cases for: no markers (returns text unchanged), multiple/parallel calls, empty `arguments`, and `reset()` between requests — see `tests/tool_parser_mistral.rs`.
+Add cases for: no markers (returns text unchanged), multiple/parallel calls, empty `arguments`, and `reset()` between requests — see `tests/models/tool_parser_mistral.rs`.
 
-**Verify:** `cargo test -p tool-parser --test tool_parser_acme`
+**Verify:** `cargo test -p tool-parser --test models_tests -- tool_parser_acme`
 **Anti-pattern:** Tool names absent from `create_test_tools()` — `handle_json_tool_streaming` validates against the `tools` slice and silently drops unknown names, so streaming emits nothing.
 
 > Note: "silently drops unknown names" is specific to this JSON streaming path. Schema-aware parsers like MiniMax-M2 (`parsers/minimax_m2.rs`) override `parse_complete_with_tools`, coerce each argument by its declared schema type (`helpers::coerce_by_schema_type`), and **forward** unknown tool names (still emit a tool_call). `tools` there only supplies types via `helpers::param_types_for_function`, not an allow-list.
