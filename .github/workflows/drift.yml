@@ -1,0 +1,135 @@
+name: Drift against SMG HEAD
+
+# The guide's early-warning system. Every day it checks the skills against the
+# current SMG main: which cited paths and symbols are gone, how far HEAD is
+# from the verified commit, which recipes' watched paths churned. It keeps one
+# open issue ("Guide drift report") up to date, so maintainers see drift
+# before an agent walks into a stale recipe. Set the repository variable
+# SMG_GUIDE_AUTOSYNC=true (and the ANTHROPIC_API_KEY secret) to let Claude Code
+# run /smg:sync and open the resync PR itself.
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    name: Measure drift
+    runs-on: ubuntu-latest
+    outputs:
+      broken: ${{ steps.measure.outputs.broken }}
+      behind: ${{ steps.measure.outputs.behind }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out SMG main with history back to the pin
+        uses: actions/checkout@v7
+        with:
+          repository: smg-project/smg
+          path: smg
+          fetch-depth: 0
+
+      - name: Install ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+
+      - name: Measure
+        id: measure
+        run: |
+          set -o pipefail
+          pin=$(jq -r .verified_commit smg-ref.json)
+          python3 scripts/check_anchors.py --smg smg --format markdown --no-fail > anchors.md
+          python3 scripts/check_anchors.py --smg smg --format json --no-fail > anchors.json
+          broken=$(jq '.broken | length' anchors.json)
+          behind=$(git -C smg rev-list --count "$pin..HEAD" 2>/dev/null || echo "unknown")
+          bash scripts/upstream_digest.sh --smg smg --since "$pin" > digest.md 2>&1 || true
+          {
+            echo "# Guide drift report"
+            echo
+            echo "- SMG HEAD: \`$(git -C smg rev-parse --short=12 HEAD)\` ($(sed -nE 's/^version *= *"([^"]+)".*/\1/p' smg/model_gateway/Cargo.toml | head -1)); guide verified at \`${pin:0:12}\` ($(jq -r .verified_version smg-ref.json), $(jq -r .verified_date smg-ref.json))"
+            echo "- Commits since the pin: **$behind**; broken anchors: **$broken**"
+            echo "- Run \`/smg:sync\` in a session with both checkouts to resync (see skills/sync/SKILL.md)."
+            echo
+            cat anchors.md
+            echo
+            cat digest.md
+          } > report.md
+          echo "broken=$broken" >> "$GITHUB_OUTPUT"
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: |
+            report.md
+            anchors.json
+
+      - name: Create or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Guide drift report"
+          body=$(head -c 60000 report.md)
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --label drift --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -z "$existing" ]; then
+            if [ "${{ steps.measure.outputs.broken }}" = "0" ] && [ "${{ steps.measure.outputs.behind }}" != "unknown" ] && [ "${{ steps.measure.outputs.behind }}" -lt 200 ]; then
+              echo "No drift worth an issue (0 broken anchors, fewer than 200 commits behind)."
+              exit 0
+            fi
+            gh label create drift --repo "$GITHUB_REPOSITORY" --description "Automated drift report against SMG HEAD" --color D93F0B 2>/dev/null || true
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --label drift --body "$body"
+          else
+            gh issue edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          fi
+
+  autosync:
+    # Opt-in: lets Claude Code run the sync skill and open the resync PR.
+    name: Run /smg:sync with Claude Code
+    needs: report
+    if: >-
+      vars.SMG_GUIDE_AUTOSYNC == 'true' &&
+      (needs.report.outputs.broken != '0' || needs.report.outputs.behind == 'unknown' || needs.report.outputs.behind > 200)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check out SMG main with history
+        uses: actions/checkout@v7
+        with:
+          repository: smg-project/smg
+          path: smg
+          fetch-depth: 0
+
+      - name: Install ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Run the smg:sync skill (skills/sync/SKILL.md in this checkout) with SMG=./smg.
+            Work on a branch named docs/resync-v<smg version>; commit with `git commit -s`
+            and no Co-authored-by trailer; open the PR with `gh pr create` titled
+            "docs: resync skills with smg HEAD (v<version>)" and a body that follows
+            .github/PULL_REQUEST_TEMPLATE.md. Never bump smg-ref.json while
+            scripts/check_anchors.py reports a broken anchor.
+          claude_args: |
+            --max-turns 80
+            --allowedTools "Read,Glob,Grep,Edit,Write,Bash,Skill,TaskCreate,TaskUpdate,TaskGet"
+          plugins: |
+            smg@smg-dev-guide
+          plugin_marketplaces: |
+            https://github.com/smg-project/smg-dev-guide.git

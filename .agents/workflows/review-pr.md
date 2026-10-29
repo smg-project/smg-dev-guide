@@ -1,6 +1,7 @@
 ---
-description: Self-review a PR against SMG anti-patterns
+description: Review an SMG PR or diff against the subsystem checklist
 ---
-1. Read the `skills/review-pr/SKILL.md` and `skills/review-pr/anti-patterns.md` files using the `view_file` tool.
-2. Compare the current pending changes (or PR diff) against the documented anti-patterns.
-3. Provide a structured review report highlighting any violations and suggesting fixes.
+1. Read `skills/review-pr/SKILL.md` and `skills/review-pr/anti-patterns.md`.
+2. Fetch the diff, list every changed file, and map each to the checklist sections with the file-to-section table before writing any finding.
+3. Work the sections; prefix every finding with the REVIEW.md severity marker (Important / Nit / Pre-existing) and cite `path:line`.
+4. Finish with counts per severity and the sections you could not verify.

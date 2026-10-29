@@ -1,62 +1,78 @@
-# SMG Anti-Patterns Reference
+# SMG anti-patterns reference
 
-Per-subsystem anti-patterns to check during PR review.
+Per-subsystem anti-patterns to check during review. Each row says what to grep for; when a path here is wrong, run `/smg:learn`.
 
-## Config Plumbing
+## Config plumbing
 
-| Anti-Pattern | Consequence | What to Look For |
-|-------------|-------------|------------------|
-| Only wiring `to_router_config()`, missing `to_server_config()` | Field silently ignored in one code path | `grep -n "new_field" model_gateway/src/main.rs` — must appear in BOTH functions |
-| Missing `#[serde(default)]` on new optional field | Existing YAML configs fail to deserialize | Check all new `Option<T>` fields in `config/types.rs` |
-| No `value_parser` on CLI flag | Invalid values accepted, crash at runtime | Check `CliArgs` in `main.rs` for new `#[arg(...)]` fields |
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| Builder chain updated, `ServerConfig` literals not (for a top-level listener setting) | `server::startup` reads the default | the field in `main.rs:to_server_config`, `bindings/python/src/lib.rs` and the `server.rs` test helper |
+| Setter missing in `config/builder.rs` | does not compile — the builder is hand-written | `RouterConfigBuilder` has no `.my_field()` |
+| Missing `#[serde(default)]` on a new field | existing serialized configs stop deserializing | new fields in `config/types.rs` |
+| Invariant only in a clap `value_parser` | Python bindings bypass clap | `config/validation.rs` lacks the check |
+| `RouterArgs` field appended at the tail, out of alphabetical order, or made positional | `test_the_keyword_only_fields_are_in_alphabetical_order` / `test_every_other_field_is_keyword_only` fail | `bindings/python/src/smg/router_args.py` (after the `KW_ONLY` marker, alphabetical), `bindings/python/tests/test_arg_parser.py` |
 
-## Worker Lifecycle & Labels
+## Worker lifecycle and labels
 
-| Anti-Pattern | Consequence | What to Look For |
-|-------------|-------------|------------------|
-| Adding `_override` field to WorkerSpec | Bypasses label pipeline, creates parallel data path | New fields on `WorkerSpec` in `crates/protocols/src/worker.rs` |
-| Post-hoc ModelCard mutation | Race conditions, stale data in routing | `card.id = ...` (or any field write) after `build_model_card()` in `workflow/steps/local/create_worker.rs` — inject via labels (`resolve_model_id`) instead |
-| Injecting K8s-specific data into `crates/protocols/` types | Tight coupling to K8s, breaks non-K8s deployments | New fields in `crates/protocols/` that reference namespaces, pods, labels |
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| `_override` field on `WorkerSpec` | parallel data path around the label pipeline | new fields on `WorkerSpec` in `crates/protocols/src/worker.rs` |
+| `ModelCard` mutated after `build_model_card()` | stale routing data, races | field writes after the build in `workflow/steps/local/create_worker.rs` |
+| K8s-specific data in `crates/protocols/` | couples every deployment to K8s | namespaces, pods, selectors in protocol types |
+| Provider-specific logic in the shared reconciler | breaks Consul/file/Slurm discovery | provider checks in `service_discovery/reconciler.rs` instead of the provider file |
 
 ## Routing
 
-| Anti-Pattern | Consequence | What to Look For |
-|-------------|-------------|------------------|
-| Only testing HTTP path, missing gRPC/ZMQ | Feature breaks for gRPC or ZMQ backends | Router tests whose workers are all `ConnectionMode::Http` (`crates/protocols/src/worker.rs:ConnectionMode`, `worker/builder.rs:connection_mode`); e2e tests parametrized on `setup_backend` with only one of `"grpc"`/`"http"` (ZMQ runs via the `E2E_CONNECTION_MODE=zmq` lane) |
-| Using `RwLock` on hot routing path | Contention under load | `RwLock` in routing policy structs (use `DashMap` instead) |
-| `.unwrap()` on empty worker slice | Panic when no workers available | `workers[0]` or `.unwrap()` on worker selection |
-| Skipping the eligibility check, or re-deriving it | Routing to unhealthy or overload-vetoed backends | Missing `w.is_available()` (`w.is_healthy_and_eligible()` in hash policies); a hand-written `is_healthy() && circuit_breaker_can_execute()` drops the overload veto |
-| Computing overload per request | Extra worker walk on the hot path | Overload is latched once per ingested load report (`worker/overload.rs`, `Worker::is_overloaded()`); selection must only read the flag |
-| Holding request memory past the lease | Per-request memory doubles under load | Parsed request / `RoutingDerivatives` / body bytes cloned out of `RequestLease` (`routers/common/request_lease.rs`) into streaming tasks, or kept after `release_dispatch()` |
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| Tests with only HTTP workers | gRPC/ZMQ regress | all `ConnectionMode::Http` in router tests; e2e parametrized on one of `grpc`/`http` |
+| `RwLock` / bare `Mutex` on the hot path | contention | locks in policy structs; use atomics or `DashMap` |
+| `.unwrap()` on a worker slice | panic with no workers | `workers[0]`, `.unwrap()` in selection |
+| Eligibility re-derived | routes to overload-vetoed workers | `is_healthy() && circuit_breaker_can_execute()` instead of `is_available()` / `get_healthy_worker_indices` |
+| Overload computed per request | extra fleet walk on the hot path | overload is latched per load report (`worker/overload.rs`, `Worker::is_overloaded()`); selection only reads it |
+| Request memory held past the lease | per-request memory doubles under load | clones out of `RequestLease` into streaming tasks, anything kept after `release_dispatch()` (`routers/common/request_lease.rs`) |
+| Load-aware policy without `remove_worker` / `reconcile_in_flight` | tallies grow under churn, phantom in-flight | overrides missing in the policy file |
+| `create_from_config` arm without `create_by_name` | a worker `policy_hint` silently falls back to the default policy | `policies/factory.rs` |
 
-## Parsers (Tool / Reasoning)
+## Parsers
 
-| Anti-Pattern | Consequence | What to Look For |
-|-------------|-------------|------------------|
-| Not resetting parser state between requests | Stale buffer from previous request bleeds into next | Missing `reset()` call or incorrect reset timing |
-| Losing partial token prefix (e.g. `</` that isn't `</think>`) | Text silently dropped during streaming | Buffer handling when partial match fails |
-| Missing factory registration | Parser unreachable at runtime | New parser not in `ParserFactory::new()` |
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| Legacy parser added for a model Symphony reads | two parsers, the legacy one unused in the default lane | `crates/tool_parser` / `crates/reasoning_parser` change without a `--parser legacy` reason; check `formats/groups.json` |
+| Symphony table without its registry row, group lines, contract `Subject` or corpus row | build or test fails, or the table is unreachable | `formats/registry.rs` `tables!`, `formats/groups.json`, `tests/parser/contract.rs`, `tests/bellwether_parse_fixtures.rs` |
+| Bytes dropped without a `DropReason`, or a malformed region swallowed | text vanishes from the answer | event construction in `crates/symphony/src/engine.rs` and assemblers |
+| Legacy: parser state not reset between requests; partial marker prefix lost (`</` that is not `</think>`) | stale buffer bleeds; text dropped mid-stream | `reset()` timing; buffer handling on a failed partial match |
 
-## ZMQ Direct Backend
+## ZMQ direct backend
 
-| Anti-Pattern | Consequence | What to Look For |
-|-------------|-------------|------------------|
-| Reordering or inserting msgpack struct fields | Silent wire corruption against a real engine | `array_like` positional structs in `crates/engine_zmq_client/src/protocol/` (e.g. `vllm::EngineCoreRequest`) — field order is the wire contract, append only; cross-check the engine's Python msgspec struct |
-| Open-ended transport dispatch | ZMQ silently takes the gRPC arm | `_ =>` arms over `BackendClient` / `ZmqDialect` (`routers/grpc/backend_client.rs`, `zmq_client.rs`); ZMQ arms bolted onto `GrpcClient` instead |
-| Awaiting the handshake inline | Request or health path blocks for the whole connect timeout | `connect_handshake` reached from a request/probe path instead of `spawn_zmq_connect_driver` plus the `WorkerConnected` signal |
-| Sending string stops over the ZMQ wire | EngineCore has no tokenizer — stops never fire, generation runs to the context window | Stop strings / EOS resolved anywhere but `BackendClient::finalize_generate_request` (`fold_tokenizer_eos_backstop`) — the wire is token-only |
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| Reordering or inserting msgpack struct fields | silent wire corruption against a real engine | positional structs in `crates/engine_zmq_client/src/protocol/` — append only; cross-check the engine's Python msgspec struct |
+| Wildcard arm over `ZmqDialect` / `BackendClient` | a new dialect silently takes the wrong arm | `_ =>` in `routers/grpc/backend_client.rs`, `crates/engine_zmq_adapter/src/client.rs` |
+| Handshake awaited inline | request or probe path blocks for the connect timeout | `connect_handshake` reached from a request/probe path instead of `spawn_zmq_connect_driver` + `WorkerConnected` (`worker/basic.rs`) |
+| String stops sent over the wire | EngineCore has no tokenizer: stops never fire | stop handling outside `engine_zmq_adapter/src/stops.rs` / `eos.rs` (`fold_tokenizer_eos_backstop`) |
+| ZMQ arm bolted onto `GrpcClient` | the transport seam leaks | ZMQ code in `routers/grpc/client.rs`; `BackendClient` is the seam |
+
+## Provider routers
+
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| New router family for an OpenAI-compatible vendor | duplicated SSE/retry/MCP glue | a module beside `openai/` where a `Provider` impl under `openai/provider/` would do |
+| Provider code outside its Cargo feature | the `self-hosted` / `anthropic-only` lint legs break | `#[cfg(feature = ...)]` missing in `crates/external_router/src/router.rs` builders |
+| Hand-rolled SSE framing | unbounded buffers, broken keep-alive frames | not using `crates/external_router/src/sse.rs` |
 
 ## Bindings
 
-| Anti-Pattern | Consequence | What to Look For |
-|-------------|-------------|------------------|
-| `RouterConfig` field not threaded through the Python chain | Compiles fine; Python launches silently run the Rust default | A new field needs a `model_gateway/src/config/builder.rs` setter, a `router_args.py` dataclass + argparse field, a `Router::new` pyo3 signature default, and a `.new_field(...)` call in `to_router_config()` (`bindings/python/src/lib.rs`) |
-| Missing field in the `ServerConfig` struct literal | `maturin develop` build failure | `server::ServerConfig { .. }` in `bindings/python/src/lib.rs` has no `..Default::default()` |
-| Missing Go type mapping | Go SDK compile failure | New enum/type not mirrored in `bindings/golang/` |
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| `RouterConfig` field not threaded through the Python chain | compiles; Python launches silently run the Rust default | `config/builder.rs` setter, `router_args.py` field, `Router::new` signature default, `.new_field(...)` in `lib.rs::to_router_config` |
+| `ServerConfig` literal in `lib.rs` missing the field | `maturin develop` fails | the `Router::start` literal has no `..Default::default()` |
+| Go type mapping missing | Go SDK compile failure | `bindings/golang/` |
 
 ## Storage
 
-| Anti-Pattern | Consequence | What to Look For |
-|-------------|-------------|------------------|
-| Bypassing the hook wrappers | Audit trail gaps | New backend handed out raw instead of wrapped in `HookedConversationStorage` / `HookedConversationItemStorage` / `HookedResponseStorage` (`hooked.rs`); new `StorageOperation` without `before()`/`after()` coverage (`hooks.rs:StorageHook`) |
-| No schema migration | Data loss on upgrade | New fields without migration handling |
+| Anti-pattern | Consequence | What to look for |
+|---|---|---|
+| Backend handed out unwrapped | audit trail gaps | `create_storage` not wrapping in `HookedConversationStorage` / `HookedConversationItemStorage` / `HookedResponseStorage` (`hooked.rs`); a new `StorageOperation` without `before()`/`after()` coverage (`hooks.rs`) |
+| Schema change without a versioned migration | data loss on upgrade | no new `Migration` in `postgres_migrations.rs` / `oracle_migrations.rs` |
+| Offset pagination | cursor contract broken | ignoring `ListParams.after` |

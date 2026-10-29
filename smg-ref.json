@@ -1,0 +1,28 @@
+{
+  "smg_repo": "https://github.com/smg-project/smg",
+  "verified_commit": "176ce3ae88f7f857441853c7dc2e087e3277b5c0",
+  "verified_version": "1.13.0",
+  "verified_date": "2026-10-29",
+  "verified_by": "manual resync (smg:sync procedure, first run)",
+  "anchors": {
+    "note": "from scripts/check_anchors.py --format json at the verified commit",
+    "checked": 2918,
+    "by_kind": {
+      "path": 840,
+      "flag": 99,
+      "literal": 117,
+      "symbol": 1787,
+      "watch": 75
+    },
+    "broken": 0,
+    "ignored": 63
+  },
+  "history": [
+    {
+      "commit": "732a42bf",
+      "version": "1.9.0",
+      "date": "2026-08-22",
+      "note": "last resync before the agent-native restructure (PR #21)"
+    }
+  ]
+}

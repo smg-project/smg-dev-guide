@@ -20,3 +20,7 @@ npm-debug.log*
 *.bak
 *.tmp
 *.log
+
+evals/results/
+__pycache__/
+*.pyc

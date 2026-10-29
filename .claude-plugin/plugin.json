@@ -1,14 +1,24 @@
 {
   "name": "smg",
-  "description": "4 process-enforcing skills for the Shepherd Model Gateway — orientation, implementation (with 20 subsystem recipes), PR review, and pre-ship quality gates",
-  "version": "0.2.0",
+  "description": "Agent-native development guide for the Shepherd Model Gateway: orientation with a live crate map, 21 subsystem recipes with verification steps, checklist PR review, a one-command pre-PR gate, CI-rule guard hooks, and a self-sync loop that keeps the guide verified against SMG HEAD",
+  "version": "0.3.0",
   "author": {
     "name": "LightSeek"
   },
   "homepage": "https://github.com/smg-project/smg-dev-guide",
   "repository": "https://github.com/smg-project/smg-dev-guide",
   "license": "Apache-2.0",
-  "keywords": ["smg", "llm-gateway", "rust", "kubernetes", "routing", "grpc"],
+  "keywords": [
+    "smg",
+    "llm-gateway",
+    "rust",
+    "kubernetes",
+    "routing",
+    "grpc",
+    "symphony",
+    "coding-agent"
+  ],
   "skills": "./skills/",
-  "commands": "./commands/"
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks.json"
 }

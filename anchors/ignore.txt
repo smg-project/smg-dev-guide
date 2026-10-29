@@ -1,0 +1,63 @@
+# Anchors that check_anchors.py must NOT look up in SMG, one anchored regex per line.
+# Two kinds belong here:
+#   1. placeholders a recipe tells the reader to replace (MyPolicy, mybackend.rs, --my-flag)
+#   2. intentional negatives: names a skill cites precisely because they do NOT exist
+#      ("there is no handle_pod_event"). Add a comment saying which skill and why.
+# Keep this list short. If a real anchor broke, fix the skill; do not hide it here.
+
+# --- placeholders ---
+My[A-Z].*
+my_.*
+[Mm]ybackend.*
+[Mm]yengine.*
+[Mm]ymodel.*
+[Mm]yprovider.*
+[Mm]ypolicy.*
+[Mm]ysource.*
+[Aa]cme.*
+PyMybackendConfig
+new_field
+old_name
+old-name
+tool_parser_acme\.rs
+crates/data_connector/(src|tests)/mybackend.*
+crates/multimodal/src/(registry|vision/processors)/mymodel\.rs
+crates/tool_parser/tests/tool_parser_acme\.rs
+model_gateway/src/policies/\{POLICY_NAME\}\.rs
+MODEL_NAME
+POLICY_NAME
+ENGINE
+BACKEND
+
+# --- intentional negatives (the skill says these do not exist) ---
+handle_pod_event                 # discovery: level-triggered reconcile, not per-event handling
+extract_tool_calls_from_value    # tool-parser: there is no such helper
+initial_in_reasoning             # reasoning-parser: the field is always_in_reasoning
+is_first_chunk                   # reasoning-parser: no such field
+ChatContentPart                  # multimodal: the type is MediaContentPart / ContentPart
+MultiModalInputs                 # multimodal: the tracker yields TrackerOutput
+StorageBackend                   # storage: three traits, no single StorageBackend
+set_attribute                    # observability: tracing::Span has no set_attribute (OTel only)
+model_gateway/src/core/          # map: this directory was removed
+
+# --- added after the first full run against v1.13.0 ---
+my-.*                            # --my-field style placeholder flags
+.*[Mm]ybackend.*                 # storage recipe placeholders (maybe_mybackend, build_mybackend_config, ...)
+XParser                          # reasoning-parser: the `reasoning_parser::XParser` re-export pattern
+default-run                      # observability/scheduler: the package declares NO default-run (two bins)
+middleware-on-error              # wasm-plugin: the WIT world has no such interface yet
+
+# --- flags of this guide's own scripts (gate.sh, check_anchors.py, upstream_digest.sh), not SMG flags ---
+skip-tests
+dry-run
+paths-only
+no-fail
+include-fenced
+only
+fix
+guide
+since
+recipes
+top
+summary
+format
