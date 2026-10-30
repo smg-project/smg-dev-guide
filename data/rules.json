@@ -1,0 +1,29 @@
+{
+  "_doc": "Naming and attribution rules SMG's CI enforces, spelled once. Consumed by scripts/gate.sh, scripts/hooks/guard_bash.py and rendered into skills/contribute/SKILL.md by scripts/render.py. Sources: smg .github/workflows/pr-naming-check.yml, .pre-commit-config.yaml, scripts/dco-check.sh.",
+  "smg": {
+    "branch_regex": "^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(/[a-zA-Z0-9._-]+)+$",
+    "branch_rule": "<type>/<description> or <username>/<description>",
+    "protected_branches": ["main", "master"],
+    "no_commit_to": ["main", "master"],
+    "pr_title_regex": "^(feat|fix|chore|docs|refactor|test|ci|perf|lint|style|revert|build)(\\([a-z0-9_./-]+\\))?!?: .+",
+    "commit_types": ["feat", "fix", "chore", "docs", "refactor", "test", "ci", "perf", "lint", "style", "revert", "build"],
+    "dco_required": true,
+    "dco_must_match_git_config": true,
+    "ai_trailer_regex": "^(Co-authored-by|Signed-off-by):.*(Claude|noreply@anthropic\\.com)",
+    "pr_body_headers": ["## Description", "### Problem", "### Solution", "## Changes", "## Test Plan"],
+    "sources": ["smg:.github/workflows/pr-naming-check.yml", "smg:.pre-commit-config.yaml", "smg:scripts/dco-check.sh", "smg:.github/PULL_REQUEST_TEMPLATE.md"]
+  },
+  "guide": {
+    "branch_regex": "^(setup|feat|fix|docs|chore|refactor)/[A-Za-z0-9._-]+$",
+    "branch_rule": "setup/*, feat/*, fix/*, docs/*, chore/* or refactor/*",
+    "protected_branches": ["main"],
+    "no_commit_to": ["main"],
+    "pr_title_regex": "^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\\(.+\\))?(!)?: .{1,}",
+    "commit_types": ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"],
+    "dco_required": true,
+    "dco_must_match_git_config": false,
+    "ai_trailer_regex": "^(Co-authored-by|Signed-off-by):.*(Claude|noreply@anthropic\\.com)",
+    "pr_body_headers": [],
+    "sources": [".github/workflows/pr-checks.yml", ".github/workflows/pr-title-check.yml", ".pre-commit-config.yaml"]
+  }
+}

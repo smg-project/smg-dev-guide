@@ -5,6 +5,9 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+      - id: check-json
+      - id: check-symlinks
+      - id: destroyed-symlinks
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ['--maxkb=500']
@@ -13,10 +16,17 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        args: ['--skip=LICENSE', '-L', 'wit,WIT']
+        args: ['--skip=LICENSE,evals/results', '-L', 'wit,WIT,ser,crate,nd']
 
   - repo: local
     hooks:
+      - id: lint-guide
+        name: Guide self-lint (recipe refs, front matter, symlinks, manifests, hooks)
+        entry: python3 scripts/lint_guide.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: dco-check
         name: DCO sign-off check
         entry: >-

@@ -1,0 +1,3 @@
+# SMG
+
+@AGENTS.md

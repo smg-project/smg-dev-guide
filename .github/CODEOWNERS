@@ -1,12 +1,25 @@
 # Default owners for the smg-dev-guide plugin
 * @slin1237
 
-# Skills
-skills/  @slin1237
-commands/ @slin1237
+# Skills, recipes, router command, agents
+skills/    @slin1237
+commands/  @slin1237
+agents/    @slin1237
 
-# Plugin config
-.cursor-plugin/ @slin1237
+# Scripts and hooks that run on contributors' machines and in SMG's review CI
+scripts/   @slin1237
+hooks/     @slin1237
+
+# Provenance, drift tooling, evals, lessons
+smg-ref.json @slin1237
+anchors/   @slin1237
+evals/     @slin1237
+lessons/   @slin1237
+
+# Platform adapters and plugin manifests
+.agents/         @slin1237
+.claude-plugin/  @slin1237
+.cursor-plugin/  @slin1237
 
 # CI / repo setup
-.github/ @slin1237
+.github/   @slin1237

@@ -1,145 +1,74 @@
 ---
 name: map
-description: Use when you need to understand the SMG codebase structure, find which crate owns a subsystem, or understand how crates depend on each other before making changes
+description: Orient in the SMG codebase before changing it. Use for "where does X live", "how does Y flow", or before a change that touches more than one file. Gives a live crate map read from the checkout, the invariants a change must respect, and the area table that names each path's recipe and review checklist.
 ---
 
 # SMG Codebase Map
 
-## What Is SMG?
+SMG is a Rust gateway in front of LLM engines (SGLang, vLLM, TensorRT-LLM, TokenSpeed, MLX) and cloud providers (OpenAI, Anthropic, Gemini, xAI). It owns worker lifecycle, routing, admission, tenancy, parsing of model output, chat-history storage, MCP tooling and observability behind OpenAI-, Anthropic- and Gemini-compatible APIs. Workers attach over HTTP, gRPC, or same-host ZMQ.
 
-High-performance Rust gateway for LLM inference backends. Routes requests to workers running vLLM, SGLang, TensorRT-LLM, MLX (and more) with 10 routing policies, KV cache optimization, K8s service discovery, WASM plugins, MCP tool execution, and mesh HA. Exposes OpenAI-, Anthropic-, and Gemini-compatible APIs (plus Responses, Conversations, and Realtime/WebSocket), with a priority admission scheduler, multi-tenancy, and rate limiting. Workers attach over HTTP, gRPC, or direct ZMQ (`ConnectionMode::{Http, Grpc, Zmq}`).
+## Live map
 
-## Crate Map
+Generated from the checkout you are in, so it cannot go stale:
 
-| Crate | Role | Key Types |
-|-------|------|-----------|
-| `model_gateway` | Main binary. HTTP/gRPC handlers, routing engine, service discovery, observability, CLI | `RouterConfig`, `ServerConfig`, `CliArgs` |
-| `protocols` | OpenAI-compatible types shared by ALL consumers (config, bindings, API). Sacred — no impl-specific fields. `ConnectionMode::from_url` is the single scheme→mode classifier (`ipc://` = ZMQ) | `WorkerSpec`, `ModelCard`, `WorkerModels`, `ConnectionMode`, `ChatCompletionRequest/Response` |
-| `kv_index` | KV cache-aware routing. Radix trees (String for HTTP, Token for gRPC), positional indexer | `StringTree`, `TokenTree`, `RadixTree` trait, `PositionalIndexer` |
-| `auth` | API key (SHA-256 hashed), JWT/OIDC, role-based access (Admin/User), audit logging | `JwtConfig`, `ApiKeyEntry`, `Principal`, `Role` |
-| `mesh` | HA cluster via SWIM gossip. CRDT KV store, partition detection, consistent hashing | `ClusterState`, `WorkerState`, `NodeStatus` |
-| `wasm` | WebAssembly plugin system. WIT interface, middleware hooks (OnRequest/OnResponse), LRU cache | `WasmModule`, `Action` (Continue/Reject/Modify) |
-| `mcp` | MCP protocol client. Tool discovery, execution, approval workflows, response format translation | `McpConfig`, `McpOrchestrator`, `ToolAnnotations` |
-| `grpc_client` | Per-engine gRPC clients for backends. Macros for shared logic; trace injection via `TraceInjector` | `SglangSchedulerClient`, `VllmEngineClient`, `TrtllmServiceClient`, `MlxEngineClient`, `TokenSpeedSchedulerClient` |
-| `engine_zmq_client` | Direct ZMQ transport to a same-host engine (crate `engine-zmq-client`), bypassing the Python gRPC servicer: `tcp://` handshake + `ipc://` data plane, gateway binds and engines dial in. Generic over `EngineProtocol`, with two dialects — vLLM EngineCore (clean-room port of vLLM's `vllm-engine-core-client`) and TokenSpeed. Feature `mock-engine` exposes a mock EngineCore | `EngineProtocol`, `Client<P>` (`EngineCoreClient`/`TokenSpeedClient`), `RequestStream`, `connect_handshake`, `EngineId` |
-| `data_connector` | Pluggable storage: PostgreSQL, Oracle, Redis, in-memory. Hook system for interception | `ConversationStorage`/`ConversationItemStorage`/`ResponseStorage` traits, `StorageHook` |
-| `tool_parser` | 17 tool call parsers (JSON, Mistral, Qwen, DeepSeek, Pythonic, Kimi-K2/K3, Inkling, Sarashina, etc.). Streaming with incremental JSON | `ToolParser` trait, `ParserFactory`, `StreamingParseResult` |
-| `reasoning_parser` | Reasoning extraction from 9 model families (DeepSeek-R1, Qwen3, Kimi/Kimi-K3, GLM, Step3, MiniMax, Cohere, Nano, Inkling). Streaming | `ReasoningParser` trait, `ParserFactory`, `ParserResult` |
-| `tokenizer` | LLM tokenization (crate `llm-tokenizer`): HF / tiktoken backends (Kimi-K2/K2.5/K2.6 is a tiktoken specialization, `kimi_k2_tokenizer.rs`), Jinja chat templates plus native renderers in `encoders/`, picked from `config.json::architectures` (DeepSeek-V3.2/V4 by `huggingface.rs:detect_renderer_from_config`, Kimi-K2.5 tools / Kimi-K3 XTML by `tiktoken.rs:detect_renderer_from_config`); EOS + stop-sequence decoding, L0/L1 encode cache, and the id+name registry the gateway loads into | `Tokenizer`, `TokenizerRegistry`, `StopSequenceDecoder`, `CachedTokenizer` |
-| `multimodal` | Image/audio processing (crate `llm-multimodal`). Per-model specs in `registry/` (LLaVA/LLaVA-Next, Qwen-VL/Qwen3-VL/Qwen3-Omni, Llama4, Phi3-V, Kimi-K2.5/K3, Inkling, Qwen3-ASR audio), processors under `vision/processors/` + `audio/processors/`, media fetching | `ImageFrame`, `MediaContentPart`, `MediaConnector` |
-| `mm_rdma` | Multimodal pixel RDMA (NIXL) transport for the gateway (crate `smg-mm-rdma`) | |
-| `workflow` | Step-based async DAG workflow engine (crate `wfaas`); the gateway wraps it in `model_gateway/src/workflow/engines.rs` and feeds it from `workflow/job_queue.rs` (`Job::{AddWorker, RemoveWorker, UpdateWorker, AddTokenizer, ...}`). A step returning `StepResult::Skip` does NOT persist its context mutations — decide to skip before writing `context.data` | `WorkflowEngine`, `WorkflowDefinition`, `StepDefinition`, `StepExecutor`, `WorkflowContext`, `StepResult` |
-| `bindings/python` | PyO3 bindings. `Router` class with ~140 constructor params, enum mapping | `Router`, `PolicyType` |
-| `bindings/golang` | Go SDK via FFI (cgo). OpenAI-style API, streaming, tool calling | `Client`, `ChatCompletionRequest` |
-| `clients/rust` | Rust client library | |
-| `clients/python`, `clients/java` | Client SDKs generated from the OpenAPI spec | |
-| `clients/openapi-gen` | Generates the OpenAPI spec + Python/Java client SDKs from protocol types (`make generate-clients`) | |
-| `mock_worker` | Multi-port mock HTTP/gRPC/ZMQ inference-worker harness (package `mock-worker`, lib `mock_worker` + binary, so in-process tests can drive it). gRPC side speaks the TokenSpeed scheduler; `--zmq-handshake <addr> --zmq-count N` runs mock vLLM EngineCore ranks that dial the gateway (via `engine-zmq-client`'s `mock-engine` feature); `--engine realistic` adds a continuous-batching simulator. Rigs: `scripts/scale_test.sh`, `scripts/sim_ab.sh` | `Config`, `http::serve`/`grpc::serve`/`zmq::serve` |
-| `grpc_servicer` | Python gRPC servicer wrapping vLLM/SGLang/MLX/TokenSpeed backends | |
+!`bash "${CLAUDE_PLUGIN_ROOT}/scripts/map_live.sh"`
 
-## Subsystems Inside `model_gateway`
+If the command shows instead of its output, run `scripts/map_live.sh <any dir inside SMG>` from the guide checkout.
 
-Beyond the crates, `model_gateway/src/` hosts several gateway-only subsystems. **There is no longer a `model_gateway/src/core/` directory** — routing and worker code moved to the locations below.
+## Invariants
 
-| Subsystem | Location | Role | Key Types |
-|-----------|----------|------|-----------|
-| Routing policies | `policies/` | 10 load-balancing policies + factory + per-model registry | `LoadBalancingPolicy`, `PolicyFactory`, `PolicyRegistry`, `SelectWorkerInfo` |
-| Provider routers | `routers/` | OpenAI, Anthropic, Gemini APIs + Responses, Conversations, Realtime/WebSocket, gRPC | `RouterManager` |
-| Priority scheduler | `middleware/scheduler/` | Priority-aware admission, per-class queues, slots, preemption, capacity reservations, autoscaling metrics | `PriorityScheduler`, `SchedulerPermit`, `Class`, `AdmitOutcome`, `TenantPolicy` |
-| Multi-tenancy | `tenant.rs` + `middleware/tenant_resolution.rs` | Canonical tenant identity + per-request resolution | `TenantIdentity`, `TenantKey`, `DataPlaneCaller`, `RouteRequestMeta` |
-| Rate limiting | `rate_limit/` + `middleware/token_bucket.rs`, `middleware/concurrency.rs` | Per-tenant token/request budgets (`--tenant-rate-limit-enabled`, `--tenant-rate-limit-config`; reserve/settle runs in the gRPC pipeline stage `routers/grpc/common/stages/rate_limit.rs`) + the global token-bucket concurrency cap | `RateLimitManager`, `RateLimitYaml`, `CompiledPolicySet`, `ReserveRequest`, `TokenBucket` |
-| Worker lifecycle | `worker/` + `workflow/steps/local/` | Worker registry, health/circuit breaking, and the discovery→create DAG | `WorkerManager`, `CreateLocalWorkerStep` |
-| ZMQ direct backend | `routers/grpc/{backend_client,zmq_client,zmq_multimodal}.rs` + `worker/worker.rs` (handshake driver) | Same-host `ipc://` workers ride the gRPC router pipeline behind `BackendClient::Zmq`; `ZmqEngineClient` translates the engine proto request to the `engine-zmq-client` wire and back, fans out `n`, folds tokenizer EOS ids into `stop_token_ids`, and drops string `stop` (the wire is token-only; the router's stop decoder trims them). Workers stay Pending until the detached handshake lands, then the `WorkerConnected` signal promotes them. No admin RPCs, KV events, PD/EPD legs, or mesh publication over ZMQ | `BackendClient`, `ZmqEngineClient`, `ZmqDialect`, `ZmqGenerateStream` |
-| Tokenizer registration | `workflow/tokenizer_registration.rs`, `workflow/steps/local/submit_tokenizer_job.rs`, `routers/tokenize/` | gRPC/ZMQ workers are tokenized in the gateway: each non-HTTP local worker submits `Job::AddTokenizer` (path chain: label `tokenizer_path` → label `model_path` → `--tokenizer-path` → `--model-path`); `LoadTokenizerStep` loads locally, else streams a healthy gRPC worker's `GetTokenizer` bundle (the ZMQ backend serves none). `/readiness` holds at 503 until every healthy gRPC/ZMQ worker's tokenizer is registered (`health.rs`), unless `--disable-tokenizer-autoload` | `TokenizerRegistry`, `TokenizerConfigRequest`, `LoadTokenizerStep`, `SubmitTokenizerJobStep` |
+1. **Layering.** `crates/protocols` holds the API types every consumer reads; a field only one crate writes belongs in `model_gateway`, never there. Library crates live under `crates/`.
+2. **Config has two paths.** `to_router_config` builds `RouterConfig` through the hand-written builder in `config/builder.rs`; `to_server_config` returns a `ServerConfig` literal that carries the whole `RouterConfig` nested. A listener-level setting needs the top-level copy in every `ServerConfig` literal (`main.rs`, `bindings/python/src/lib.rs`, the `server.rs` test helper). Validation in `config/validation.rs` runs inside `RouterConfigBuilder::build()` for the CLI and Python alike; Python mirrors the chain in `lib.rs` and `router_args.py`.
+3. **Request flow.** handler (`server.rs`) → WASM OnRequest → auth → tenant resolution → admission (priority scheduler or `ConcurrencyLimitLayer`, chosen once by `AdmissionMode::from_config`) → `routers/gateway.rs` picks the family router → HTTP proxy, or the gRPC/ZMQ `Mode`-parameterized pipeline (`routers/grpc/pipeline.rs`), or a provider router in `crates/external_router` → WASM OnResponse. Middleware order is the reverse of the `route_layer` calls in `server.rs`. Non-routing handlers live in `model_gateway/src/endpoints/`.
+4. **Workers.** Providers in `service_discovery/` emit `DiscoveredWorker`s; one reconciler diffs them (labels `smg.ai/discovery-*`) into `Job::AddWorker` / `Job::RemoveWorker`; registration is the step DAG under `workflow/steps/`; every piece of metadata flows as a label into `ModelCard`, never as a parallel field. ZMQ workers skip the probes and stay Pending until `WorkerConnected`.
+5. **Parsing.** Symphony (`crates/symphony`) is the default parser: one format table per model family, typed events. `--parser legacy` selects `crates/tool_parser` and `crates/reasoning_parser`; a model outside Symphony's registry falls back to them. New model support is a Symphony table.
+6. **Three transports.** HTTP (own router), gRPC (`crates/grpc_client`), same-host ZMQ (`crates/engine_zmq_client` wire + `crates/engine_zmq_adapter` translation, surfaced as `BackendClient::Zmq`). gRPC and ZMQ share the pipeline. A cross-cutting feature supports all three or rejects loudly at registration.
+7. **Vocabulary.** A disaggregated dispatch has two **sides**; a worker has a **role**; the workers of one role are a **pool**. "Leg" is not used (CONTRIBUTING.md). More in `smg:craft`.
 
-## Layering Rule
+## Where things live
 
-```
-crates/protocols (shared types — ALL consumers)
-    ↑
-model_gateway (implementation — ONE consumer writes each field)
-    ↑
-bindings/* (language SDKs — wrap model_gateway + protocols)
-```
+<!-- render:where-things-live -->
+| Area | Go to | Recipe |
+|---|---|---|
+| Config and CLI | `model_gateway/src/config/`, `model_gateway/src/main.rs`, `model_gateway/src/cli/`: flag groups in main.rs (`CliArgs` flattens `RoutingArgs`, `WorkerArgs`, `DiscoveryArgs`, `ServingArgs`, `ModelArgs`, `IntegrationArgs`), value parsers in cli/, RouterConfig types, builder and validation | `recipes/config-plumbing.md` |
+| Protocol types | `crates/protocols/`: shared OpenAI, Anthropic and Gemini API types for every consumer; vendor profiles under src/profile/ | `recipes/protocols-profile.md` |
+| App wiring and server | `model_gateway/src/app_context.rs`, `model_gateway/src/server.rs`, `model_gateway/src/server/`, `model_gateway/src/health.rs`: AppContext construction, the axum router and middleware stacks, TLS, connection limits, auth posture, health probes | `recipes/http-endpoint.md` |
+| Routing policies | `model_gateway/src/policies/`: load-balancing policies, factory and registry; cache-aware selection pipeline in cost/ | `recipes/routing-policy.md` |
+| Routers and dispatch | `model_gateway/src/routers/`: the gateway front (gateway.rs), factory, HTTP proxy router, the Mode-parameterized gRPC pipeline, external-router mounting, shared dispatch in common/ | `recipes/http-endpoint.md` |
+| Non-routing endpoints | `model_gateway/src/endpoints/`: tokenize/detokenize, parse, conversations, stored responses, model inventory | `recipes/http-endpoint.md` |
+| Admission | `model_gateway/src/middleware/scheduler/`, `model_gateway/src/middleware/concurrency.rs`, `model_gateway/src/middleware/token_bucket.rs`: priority scheduler (classes, queues, slots, preemption) and the legacy concurrency cap | `recipes/scheduler-feature.md` |
+| Per-tenant rate limiting | `model_gateway/src/rate_limit/`, `model_gateway/src/routers/grpc/common/stages/rate_limit.rs`: token and request budgets per tenant, reserve/settle in the gRPC pipeline | `recipes/rate-limit-feature.md` |
+| Tenancy and serving auth | `model_gateway/src/tenant/`, `model_gateway/src/middleware/tenant_resolution.rs`, `model_gateway/src/middleware/auth.rs`: tenant identity, per-request resolution, serving-path API keys | `recipes/tenancy-feature.md` |
+| Control-plane auth | `crates/auth/`: JWT/OIDC and API keys for the control plane, roles, audit | `recipes/auth-feature.md` |
+| Service discovery | `model_gateway/src/service_discovery/`: kubernetes, consul, file and slurm providers behind one reconciler | `recipes/discovery-provider.md` |
+| Workers and registration | `model_gateway/src/worker/`, `model_gateway/src/workflow/`: worker registry, health, load, circuit breaking, KV event monitor; registration DAG steps and job queue | `recipes/discovery-feature.md` |
+| Workflow engine | `crates/workflow/`: the wfaas step engine the registration DAG runs on | none yet (read the code; `smg:learn` afterwards) |
+| Symphony (default parser) | `crates/symphony/`: format tables, registry and checkpoint groups, call-syntax assemblers, grammars, API adapters | `recipes/symphony-format.md` |
+| Legacy parsers | `crates/tool_parser/`, `crates/reasoning_parser/`, `crates/response_template/`: per-model tool and reasoning parsers for --parser legacy; the HF response-template port | `recipes/tool-parser.md` |
+| Tokenizer | `crates/tokenizer/`, `model_gateway/src/workflow/tokenizer_registration.rs`, `model_gateway/src/endpoints/tokenize/`: HF and tiktoken backends, chat templates and native renderers, stop/EOS decoding, encode cache; gateway-side registration per worker | `recipes/tokenizer.md` |
+| KV-cache index | `crates/kv_index/`, `crates/radix_tree/`, `model_gateway/src/worker/kv_event_monitor.rs`, `model_gateway/src/worker/kv_index_backend.rs`: radix trees for routing-side prefix matching, the event-driven chain index, the generic prefix core | `recipes/kv-index-feature.md` |
+| gRPC engine clients | `crates/grpc_client/`, `model_gateway/src/routers/grpc/client.rs`: per-engine gRPC clients and protos; the GrpcClient enum | `recipes/grpc-backend.md` |
+| ZMQ direct backend | `crates/engine_zmq_client/`, `crates/engine_zmq_adapter/`, `model_gateway/src/routers/grpc/zmq_client.rs`, `model_gateway/src/routers/grpc/backend_client.rs`: same-host ipc:// wire, the per-engine adapter, the gateway seam | `recipes/zmq-backend.md` |
+| Engine servicers | `crates/engine_servicer/`, `grpc_servicer/`: the Rust and Python servicers that serve each engine's gRPC proto on the engine node | `recipes/engine-servicer.md` |
+| Third-party provider routers | `crates/external_router/`, `model_gateway/src/routers/external.rs`, `model_gateway/src/routers/provider_support.rs`: OpenAI, Anthropic, Gemini and xAI routers and the shared glue (SSE, retry, MCP utils, realtime) | `recipes/provider-api.md` |
+| MCP | `crates/mcp/`: MCP client: inventory, approval policy, transports | `recipes/mcp-feature.md` |
+| Storage | `crates/data_connector/`: conversation and response storage backends, migrations, hooks, bounds | `recipes/storage-backend.md` |
+| Multimodal | `crates/multimodal/`, `crates/mm_rdma/`, `model_gateway/src/routers/grpc/multimodal/`: vision and audio processors, model specs, media fetching; gateway planning and the capability matrix | `recipes/multimodal-feature.md` |
+| WASM plugins | `crates/wasm/`, `examples/wasm/`, `model_gateway/src/wasm/`, `model_gateway/src/middleware/wasm.rs`: the WASM host, the WIT world, middleware guests | `recipes/wasm-plugin.md` |
+| Mesh HA | `crates/mesh/`, `model_gateway/src/mesh/`: SWIM gossip, CRDT namespaces, gateway wiring | `recipes/mesh-feature.md` |
+| Observability | `model_gateway/src/observability/`, `model_gateway/src/middleware/metrics.rs`, `model_gateway/src/middleware/logging.rs`: metrics, OTel tracing, structured logging, runtime self-metrics | `recipes/observability-feature.md` |
+| RL control plane | `crates/rl/`: worker discovery, engine-route passthrough and fan-out; inert unless --enable-rl | none yet (read the code; `smg:learn` afterwards) |
+| Bindings | `bindings/`: Python PyO3 Router and launcher, servicer bindings, Go SDK | `recipes/bindings-update.md` |
+| Generated clients | `clients/`: the OpenAPI spec and Python/Java clients generated from protocol types; the Rust client | `recipes/protocols-profile.md` |
+| E2E harness and CI | `e2e_test/`, `scripts/`, `.github/workflows/`: e2e suites, fixtures and launchers, CI tooling and workflows | `recipes/e2e-lane.md` |
+| Mock workers and test harness | `crates/mock_worker/`, `model_gateway/test_harness/`: mock HTTP/gRPC/ZMQ workers and the in-process app builders every wire feature needs an arm in | none yet (read the code; `smg:learn` afterwards) |
+| Helm chart | `deploy/`: the chart; its arguments are pinned to RouterArgs by a bindings test | `recipes/config-plumbing.md` |
+<!-- /render -->
 
-**Directory layout**: Library crates live under `crates/` (e.g. `crates/mcp/`, `crates/mesh/`). `model_gateway/`, `bindings/`, `clients/`, and `grpc_servicer/` remain at repo root.
+## Commands
 
-**Iron law**: If only one crate writes a field, it doesn't belong in `crates/protocols/`. K8s-specific, runtime-specific, or gateway-specific fields stay in `model_gateway`.
+`cargo +nightly fmt --all` · `cargo clippy --workspace --all-targets --all-features -- -D warnings` (drop `--all-features` without system OpenCV) · `cargo test -p <package>` · `make python-dev` after config, protocol or binding changes · `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh"` for the whole pre-PR gate.
 
-## Config Propagation (3-Stage)
+## Next
 
-```
-CLI args (main.rs CliArgs) + YAML file (RouterConfig)
-    ↓ merge (CLI overrides file)
-DiscoveryConfig / RouterConfig (config/types.rs) — serde-friendly, user-facing
-    ↓ convert in main.rs (TWO paths: to_router_config + to_server_config)
-ServiceDiscoveryConfig / ServerConfig — typed, runtime
-```
-
-**Both conversion paths** in main.rs must stay in sync. Miss one = CLI flag or config file silently ignored.
-
-## Request Flow
-
-```
-Client → HTTP/gRPC handler (OpenAI / Anthropic / Gemini router)
-  → WASM OnRequest → Auth → Tenant resolution
-  → Admission (priority scheduler OR legacy concurrency/token-bucket — never both)
-  → (gRPC pipeline only: per-tenant rate-limit reserve)
-  → Routing policy selects worker → Proxy to backend
-  → Stream response → Tool/reasoning parsing → WASM OnResponse → Client
-
-Realtime (WebSocket):
-Client → WS upgrade → Realtime session registry → Proxy to backend WS
-```
-
-**Middleware order is the reverse of the `route_layer` calls** in `server.rs` (last added = outermost), which is why WASM runs before auth. `with_admission_layer` installs either the priority scheduler or the legacy concurrency limiter, not a chain of both.
-
-**gRPC and ZMQ workers share one pipeline** (`ConnectionMode::uses_grpc_pipeline()`), differing only in `BackendClient::Grpc` vs `BackendClient::Zmq` (metrics label `connection_mode="zmq"`); HTTP workers are proxied by their own router. Overload-vetoed workers are excluded from selection, and an all-overloaded fleet sheds 503 + `Retry-After` (`routers/common/overload.rs`). On the HTTP path, bodies over `--stream-request-bodies-over` bypass the typed path entirely — streamed verbatim, never parsed, never retried.
-
-## Worker Lifecycle (Discovery DAG)
-
-Steps live under `model_gateway/src/workflow/steps/` (branches `local/`, `shared/`, `external/`, assembled in `steps/mod.rs`) — a DAG, not a fixed 5-step list. Discovery itself is level-triggered (a reconcile pass over a kube reflector store), not edge-triggered — there is no `handle_pod_event`:
-
-```
-K8s pod store → reconcile_workers() (service_discovery.rs)
-  → compute_desired_state() [PodInfo::from_pod() per pod; one worker per port in
-      the `smg.ai/worker-ports` annotation] → compute_actions()
-  → Job::AddWorker / Job::RemoveWorker (workflow/job_queue.rs)
-
-  classify_worker_type (waits worker_startup_delay_secs)
-  → detect_connection_mode (explicit http/grpc/ipc:// scheme honored, else probe
-      HTTP+gRPC every worker_startup_check_interval_secs)
-  → detect_backend (sglang/vllm/trtllm/tokenspeed/mlx; unidentified OpenAI-compatible
-      HTTP → `generic`; ZMQ defaults to vLLM unless runtime_type is set)
-  → discover_metadata (flattens into labels HashMap) → discover_dp_info (rank/size)
-  → create_local_worker (merge labels, resolve model_id, build ModelCard)
-  → ensure_harmony_encoding (gpt-oss gRPC/ZMQ only) → register_workers
-  → { update_policies | submit_tokenizer_job (non-HTTP) | activate_workers }
-```
-
-**ZMQ workers short-circuit the probes**: `detect_connection_mode` is a no-op (SMG binds, the engine dials), `discover_metadata` yields no labels, `discover_dp_info` takes `dp_size` from the spec. `create_local_worker` requires `--model-path` (EngineCore reports no served model name), forces health checks on, and rejects Prefill/Decode/Encode worker types, dp-aware expansion, runtimes other than vllm/tokenspeed, and handshake-port collisions. `activate_workers` leaves them Pending until the `WorkerConnected` signal arrives.
-
-## The Label Pipeline
-
-Central integration pattern. All worker metadata flows as key-value labels:
-- **Source**: Backend HTTP endpoints (flattened JSON → HashMap)
-- **Override**: WorkerSpec.labels from config (takes precedence)
-- **Consumed**: create_worker.rs reads labels to build ModelCard
-- **To inject metadata**: add as label — pipeline handles merging
-
-## Essential Commands
-
-```bash
-cargo +nightly fmt --all                                      # Format
-cargo clippy --all-targets --all-features -- -D warnings      # Lint
-cargo test                                                     # Test
-make python-dev                                                # Python bindings
-make generate-clients                                          # Regenerate OpenAPI spec + Python/Java SDKs
-make pre-commit                                                # All checks
-```
-
-## Next Steps
-
-- **Implementing?** Use `smg:implement` — detects the subsystem and loads step-by-step recipes with verification.
-- **Preparing to ship?** Use `smg:contribute` — enforces quality gates before PR.
-- **Reviewing a PR?** Use `smg:review-pr` — systematic checklist mapped to changed subsystems.
+`smg:implement` to build with a recipe · `smg:craft` before writing non-trivial code · `smg:review-pr` · `smg:contribute` to ship · `smg:learn` when this map is wrong. Deeper notes (subsystem types, CI lanes, policy eligibility, tokenizer registration, ZMQ constraints, e2e markers): `reference.md` in this directory.

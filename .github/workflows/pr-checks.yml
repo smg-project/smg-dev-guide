@@ -35,6 +35,68 @@ jobs:
           SKIP: dco-check,branch-name-check
         run: pre-commit run --all-files --show-diff-on-failure
 
+  guide-lint:
+    # The guide's own plumbing: recipe references, front matter, symlinks,
+    # manifests, hooks, provenance, evals. Needs no SMG checkout.
+    name: Guide self-lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Compile scripts
+        run: |
+          python3 -m py_compile scripts/*.py scripts/hooks/*.py
+          for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh; do bash -n "$f"; done
+
+      - name: Lint the guide
+        run: python3 scripts/lint_guide.py
+
+      - name: Validate the plugin manifest with the Claude Code CLI
+        # Informational: the CLI validator is the plugin directory's own check.
+        continue-on-error: true
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude plugin validate .
+
+  anchors:
+    # Every path, symbol, flag and lane the skills cite must exist in SMG at the
+    # commit smg-ref.json says the guide was verified against. A PR that cites
+    # something that is not there fails here; drift of SMG itself is reported
+    # by drift.yml instead, so this job stays deterministic.
+    name: Anchors exist in pinned SMG
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the pinned SMG commit
+        id: ref
+        run: echo "sha=$(jq -r .verified_commit smg-ref.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out SMG at the pin
+        uses: actions/checkout@v7
+        with:
+          repository: smg-project/smg
+          ref: ${{ steps.ref.outputs.sha }}
+          path: smg
+          fetch-depth: 1
+
+      - name: Install ripgrep
+        run: sudo apt-get update -q && sudo apt-get install -y -q ripgrep
+
+      - name: Check anchors
+        run: |
+          python3 scripts/check_anchors.py --smg smg --format markdown | tee anchors.md >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/check_anchors.py --smg smg
+
   commit-messages:
     name: DCO sign-off and attribution
     runs-on: ubuntu-latest
@@ -124,7 +186,7 @@ jobs:
     # this workflow to `needs` and to the result check below, or it silently
     # stops gating.
     name: finish
-    needs: [pre-commit, commit-messages, branch-name]
+    needs: [pre-commit, guide-lint, anchors, commit-messages, branch-name]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -136,6 +198,8 @@ jobs:
           # push, and branch-name is skipped for fork PRs.
           failed=""
           for r in "pre-commit=${{ needs.pre-commit.result }}" \
+                   "guide-lint=${{ needs.guide-lint.result }}" \
+                   "anchors=${{ needs.anchors.result }}" \
                    "commit-messages=${{ needs.commit-messages.result }}" \
                    "branch-name=${{ needs.branch-name.result }}"; do
             name=${r%%=*}

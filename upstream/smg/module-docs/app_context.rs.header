@@ -1,0 +1,4 @@
+//! `AppContext`: what every router shares, built once from `RouterConfig` and passed as an `Arc`:
+//! the worker and policy registries, the HTTP client from the client factory, tokenizers, storage,
+//! the MCP orchestrator, the rate limiter and the KV event monitor. Construction order is dependency
+//! order; a component another one reads is built first and is never rebuilt at runtime.

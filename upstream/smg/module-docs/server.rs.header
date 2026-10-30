@@ -1,0 +1,5 @@
+//! The axum application: the route groups, their middleware stacks and the listener. Layers apply
+//! bottom-up, so the last `route_layer` call runs outermost (WASM before auth before tenant
+//! resolution before admission). Admission is chosen once at startup by `AdmissionMode::from_config`:
+//! the priority scheduler or the legacy `ConcurrencyLimitLayer`, never both. Handlers take typed
+//! bodies by value and hand them to `RouterTrait` methods.

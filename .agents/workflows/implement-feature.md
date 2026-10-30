@@ -1,6 +1,5 @@
 ---
-description: Implement a new feature using subsystem guidance
+description: Build a change in SMG with the matching recipe
 ---
-1. Ask the user which subsystem or feature they want to implement if it's not clear from the context.
-2. Read the `skills/implement/SKILL.md` file and any corresponding subsystem `.md` files in that directory using the `view_file` tool.
-3. Apply the guidelines and constraints from the skill files while implementing the feature.
+1. Follow `skills/implement/SKILL.md`: match the request to the detection table, read the recipe(s) under `skills/implement/recipes/`, one task per step, run each step's Verify line.
+2. Read `skills/craft/SKILL.md` once; a recipe step that is wrong goes to `skills/learn/SKILL.md`. Finish with the `verify-pr` workflow.

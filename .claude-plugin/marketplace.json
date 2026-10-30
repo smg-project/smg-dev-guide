@@ -7,8 +7,8 @@
   "plugins": [
     {
       "name": "smg",
-      "description": "4 process-enforcing skills for the Shepherd Model Gateway — orientation, implementation (with 20 subsystem recipes), PR review, and pre-ship quality gates",
-      "version": "0.2.0",
+      "description": "Agent-native development guide for the Shepherd Model Gateway: a live crate map, 27 subsystem recipes with a verify step per action, per-subsystem review checklists, the house style (vocabulary, performance, interfaces, structure) with evidence, a one-command pre-PR gate, CI-rule guard hooks, and a self-sync loop (anchor, coverage and vocabulary checkers) that keeps the guide verified against SMG HEAD",
+      "version": "0.4.0",
       "source": "./",
       "author": {
         "name": "LightSeek"

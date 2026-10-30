@@ -1,0 +1,145 @@
+{
+  "_doc": "Terms SMG avoids, each with the preferred term and the source. scripts/check_vocabulary.py applies them to diffs, commit messages and the guide's own text. `level` error = a reviewer would reject it (stated in SMG's docs); warn = the guide's own addition for generated-sounding prose, tune after checking SMG's usage. `scope` all | prose | code. `allow` regexes exempt a line (CI matrix legs are not PD legs). `regex` overrides the default whole-word match of `term`.",
+  "terms": [
+    {
+      "term": "leg",
+      "regex": "\\blegs?\\b",
+      "replace": "side (the prefill side / the decode side), role (WorkerRole), or pool (the workers of one role)",
+      "why": "CONTRIBUTING.md PD vocabulary: 'leg' meant all three at once and does not come back in code, comments, test names or log lines",
+      "level": "error",
+      "scope": "all",
+      "allow": [
+        "[\"'`“‘]legs?[\"'`”’]",
+        "[\"'`“‘]legs?\\b",
+        "\\b(CI|lint|matrix|clippy|workflow)\\b.*\\blegs?\\b",
+        "\\bleg: ",
+        "\\blegs?[\"'`”’]",
+        "\\blegs?\\b.*\\b(CI|lint|matrix|clippy|workflow)\\b",
+        "\\bnever\\b",
+        "\\bnot (its|a|the|as a) legs?\\b",
+        "\\bnot (used|say|write)\\b",
+        "\\bsaid legs?\\b",
+        "matrix\\.leg"
+      ]
+    },
+    {
+      "term": "arm (of a dispatch)",
+      "regex": "\\b(prefill|decode|encode|dispatch|request|pd|epd)\\s+arms?\\b|\\barms?\\s+of\\s+(the|a|each)\\s+(dispatch|request|pd|pair)\\b",
+      "replace": "side, role or pool (a match arm is fine)",
+      "why": "guide-added at the maintainers' request: no written SMG rule, but 'arm' for a side of a dispatch is as vague as 'leg'; a match arm is fine",
+      "level": "error",
+      "scope": "all",
+      "allow": [
+        "[\"'`“‘]arms?[\"'`”’]",
+        "\\barms? of (the|a) match\\b",
+        "match arm"
+      ]
+    },
+    {
+      "term": "robust",
+      "replace": "say what it survives (a restart, a disconnect, a malformed body)",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs; SMG's docs state the failure handled",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]robust[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "seamless",
+      "regex": "\\bseamless(ly)?\\b",
+      "replace": "describe the handoff",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]seamless[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "leverage",
+      "regex": "\\bleverag(e|es|ed|ing)\\b",
+      "replace": "use",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]leverage[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "comprehensive",
+      "replace": "say what is covered",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]comprehensive[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "delve",
+      "regex": "\\bdelv(e|es|ed|ing)\\b",
+      "replace": "read, look at",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]delve[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "utilize",
+      "regex": "\\butiliz(e|es|ed|ing)\\b",
+      "replace": "use",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]utilize[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "cutting-edge",
+      "regex": "\\b(cutting-edge|state-of-the-art|best-in-class|world-class)\\b",
+      "replace": "name the property",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]cutting-edge[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "streamline",
+      "regex": "\\bstreamlin(e|es|ed|ing)\\b",
+      "replace": "say what got shorter or faster",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]streamline[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    },
+    {
+      "term": "enhance",
+      "regex": "\\benhanc(e|es|ed|ing|ement|ements)\\b",
+      "replace": "say what changed",
+      "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
+      "level": "warn",
+      "scope": "prose",
+      "allow": [
+        "[\"'`“‘]enhance[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
+    }
+  ]
+}
