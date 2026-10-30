@@ -14,6 +14,9 @@ Checks that the guide's own plumbing holds together:
   * anchors/ignore.txt patterns compile
   * evals cases reference skills that exist
   * no Markdown still points at the pre-move skills/implement/<recipe>.md layout
+  * recipes follow the lean template (Inputs, Steps with a Verify per step, Rules; no banned headings)
+  * data/*.json parse and reference existing recipes, checklists and lanes; rendered tables are fresh
+  * the guide's own prose passes the vocabulary check (error level); commands/go.md routes to every skill
 
 Exit 1 on any error; warnings never fail the run.
 """
@@ -63,6 +66,38 @@ def frontmatter(path: Path) -> dict:
     return data
 
 
+BANNED_HEADINGS = {"## common mistakes", "## critical rules", "## key rules", "## anti-patterns", "## critical rule", "## key rule"}
+REQUIRED_HEADINGS = ("## Inputs", "## Steps", "## Rules")
+
+
+def check_recipe_template(recipe: Path, rel) -> None:
+    """The lean template: Inputs, Steps (each step with a Verify line, the gate step excepted), Rules."""
+    lines = recipe.read_text(encoding="utf-8").splitlines()
+    heads = [l.strip() for l in lines if l.startswith("## ")]
+    for h in heads:
+        if h.lower() in BANNED_HEADINGS:
+            err(f"{rel}: heading '{h}' is banned by the template (fold it into a step's Trap line or into Rules)")
+    for h in REQUIRED_HEADINGS:
+        if h not in heads:
+            err(f"{rel}: missing heading '{h}'")
+    in_steps = False
+    step_title, has_verify = None, True
+    def close():
+        if step_title and not has_verify and "gate" not in step_title.lower():
+            err(f"{rel}: step '{step_title}' has no 'Verify:' line")
+    for l in lines:
+        if l.startswith("## "):
+            close(); step_title, has_verify = None, True
+            in_steps = l.strip() == "## Steps"
+        elif in_steps and l.startswith("### "):
+            close(); step_title, has_verify = l[4:].strip(), False
+        elif in_steps and step_title and l.lstrip().startswith("Verify:"):
+            has_verify = True
+    close()
+    if len(lines) > 140:
+        warn(f"{rel}: {len(lines)} lines; the template targets about 100 (120 for the widest recipes)")
+
+
 def main() -> int:
     skills_dir = ROOT / "skills"
     skill_names = sorted(p.name for p in skills_dir.iterdir() if (p / "SKILL.md").is_file())
@@ -105,8 +140,11 @@ def main() -> int:
             err(f"{rel}: level must be full, anchors or draft")
         if not fm.get("watch"):
             err(f"{rel}: watch list is empty (paths whose churn should trigger re-verification)")
+        if "exemplars" not in fm:
+            err(f"{rel}: front matter lacks `exemplars:` (recent SMG commits of this kind; an empty list with a comment is allowed)")
         if f"recipes/{recipe.name}" not in impl_skill:
             err(f"{rel}: not referenced from skills/implement/SKILL.md (orphan recipe)")
+        check_recipe_template(recipe, rel)
 
     # .agents/skills symlinks
     agents_skills = ROOT / ".agents" / "skills"
@@ -154,6 +192,40 @@ def main() -> int:
         fm = frontmatter(agent)
         if not fm.get("name") or not fm.get("description"):
             err(f"{agent.relative_to(ROOT)}: agents need name and description front matter")
+
+    # data layer: JSON parses, recipes/checklists/lanes referenced from data exist, render is fresh
+    sub = json.loads((ROOT / "data" / "subsystems.json").read_text())
+    json.loads((ROOT / "data" / "rules.json").read_text())
+    json.loads((ROOT / "data" / "vocabulary.json").read_text())
+    checklists_dir = ROOT / "skills" / "review-pr" / "checklists"
+    for a in sub["areas"]:
+        if a.get("recipe") and not (recipes_dir / f"{a['recipe']}.md").is_file():
+            err(f"data/subsystems.json: area {a['id']} names missing recipe {a['recipe']}")
+        for c in a.get("checklists", []):
+            if not (checklists_dir / f"{c}.md").is_file():
+                err(f"data/subsystems.json: area {a['id']} names missing checklist {c}")
+        for l in a.get("lanes", []):
+            if l not in sub["lanes"]:
+                err(f"data/subsystems.json: area {a['id']} names unknown lane {l}")
+    import subprocess
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "render.py"), "--check"], capture_output=True, text=True)
+    if r.returncode != 0:
+        err("rendered tables are stale: run python3 scripts/render.py (" + r.stdout.strip().splitlines()[-1] + ")")
+    prose = [str(p) for d in ("skills", "agents", "commands", "upstream", "lessons") for p in (ROOT / d).rglob("*.md") if (ROOT / d).is_dir()] + [str(ROOT / "README.md")]
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "check_vocabulary.py"), "--strict", "--quiet-warn", *prose], capture_output=True, text=True)
+    if r.returncode != 0:
+        for line in r.stdout.splitlines():
+            if line.startswith("ERROR"):
+                err("vocabulary: " + line[6:])
+    else:
+        last = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+        m = re.search(r"(\d+) warn-level", last)
+        if m and int(m.group(1)):
+            warn(f"vocabulary: {m.group(1)} warn-level hit(s) in the guide's prose (run scripts/check_vocabulary.py on skills/ to list them)")
+    go = (ROOT / "commands" / "go.md").read_text(encoding="utf-8")
+    for name in skill_names:
+        if f"smg:{name}" not in go:
+            err(f"commands/go.md does not route to smg:{name}")
 
     # provenance
     ref = json.loads((ROOT / "smg-ref.json").read_text())

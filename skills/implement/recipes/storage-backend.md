@@ -4,135 +4,92 @@ verified: 176ce3ae88f7f857441853c7dc2e087e3277b5c0
 level: anchors
 watch:
   - crates/data_connector/src/
+  - crates/data_connector/tests/
   - model_gateway/src/app_context.rs
+exemplars:
+  - 4d02b12f   # one contract on every backend: conformance.rs, the four backends, ci_rust_tests.sh
+  - af59ba47   # a bound on every store call: bounded.rs, factory.rs bounded(), redis_integration.rs, tests/common
+  - b39f784e   # tenant scope: a tenant column in every migration, core.rs, README
 ---
 
-# Adding a Storage Backend to SMG
+# Add a history storage backend
 
-Storage backends live in `crates/data_connector/src/` as FLAT files (`memory.rs`, `redis.rs`, `postgres.rs`, `oracle.rs`, `noop.rs`) — never a directory. There is NO single `StorageBackend` trait: a backend implements three traits from `core.rs` — `ConversationStorage`, `ConversationItemStorage`, `ResponseStorage` — as three separate structs sharing one store handle. Hooks are applied by `create_storage` wrapping your structs in `Hooked*` decorators — a backend writes NO hook code itself. Model this on `redis.rs`.
+Backends are flat files in `crates/data_connector/src/` (`memory.rs`, `redis.rs`, `postgres.rs`, `oracle.rs`, `noop.rs`), never a directory. There is no single `StorageBackend` trait: a backend implements three traits from `core.rs`, `ConversationStorage`, `ConversationItemStorage`, `ResponseStorage`, as three structs sharing one store handle.
+`create_storage` (`factory.rs`) builds the `StorageBundle`, wraps a remote store's three handles in `Bounded*Storage` (`bounded.rs`) under the backend's `op_timeout_secs`, and wraps everything in `Hooked*` (`hooked.rs`) when a hook is configured; a backend writes no hook or bound code. Model on `redis.rs`.
+Package `data-connector` v2.4.0, depended on from the workspace as `smg-data-connector`.
 
-## Inputs to gather first
+Not this recipe:
+- Hook logic belongs in `hooks.rs`/`hooked.rs`; column renames and skips in `schema.rs` (`SchemaConfig`, `TableConfig`).
 
-| Input | Example | Notes |
-|-------|---------|-------|
-| `BACKEND` | `mybackend` | File `mybackend.rs`; structs `MybackendConversationStorage`, `MybackendConversationItemStorage`, `MybackendResponseStorage` |
-| Config struct | `MybackendConfig` | Lives in `config.rs`; holds connection URL, `pool_max`, optional `schema: Option<SchemaConfig>` |
-| Store handle | `MybackendStore` | `Clone`-able pool + `Arc<SchemaConfig>`, shared by all three structs |
+## Inputs
+
+| Input | Example | Used in |
+|---|---|---|
+| `<backend>` | `redis` | file `<backend>.rs`; structs `<Backend>ConversationStorage`, `<Backend>ConversationItemStorage`, `<Backend>ResponseStorage` |
+| config struct | `RedisConfig` | `config.rs`: connection URL, `pool_max`, `op_timeout_secs`, `schema: Option<SchemaConfig>`, `validate()` and `validate_bounds()` |
+| store handle | `RedisStore` | a `Clone` pool plus `Arc<SchemaConfig>`, shared by the three structs; `contact(bound)` for the start-up round trip |
 
 ## Steps
 
-### Step 1: Create the backend file
+### 1. Create the backend file
 
-**File:** `crates/data_connector/src/mybackend.rs`
-
-Define a `Clone` store handle, then three structs each taking `store: MybackendStore`. Implement the three async traits. Honor schema overrides PER TABLE — `col` / `is_skipped` are methods on `TableConfig`, not on `SchemaConfig`: `let s = &self.store.schema.conversations;` then `s.col("field")` / `s.is_skipped("field")`. Append hook-provided columns from `current_extra_columns().unwrap_or_default()` + `resolve_extra_column_values(s, &hook_extra)` on every write (see `redis.rs` create paths).
+File: `crates/data_connector/src/<backend>.rs` — Do: a `Clone` store (`pool`, `pub(crate) schema: Arc<SchemaConfig>`; `new(config)` validates the schema) and three structs each taking `store`. Honor schema overrides per table: `col`/`is_skipped` are methods on `TableConfig`, so `let s = &self.store.schema.conversations;` then `s.col("field")`/`s.is_skipped("field")`. On every write append the hook columns, `current_extra_columns().unwrap_or_default()` (`context.rs`) resolved by `resolve_extra_column_values(s, &hook_extra)` (`common.rs`), and persist `tenant` (`NewConversation`, `Conversation`, `StoredResponse` carry `tenant: Option<String>`; `tenant_scope_allows`/`is_visible_to` in `core.rs` decide reads).
 
 ```rust
-use std::sync::Arc;
-use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-
-use crate::{
-    config::MybackendConfig,
-    core::{
-        Conversation, ConversationId, ConversationItem, ConversationItemId,
-        ConversationItemResult, ConversationItemStorage, ConversationMetadata,
-        ConversationResult, ConversationStorage, ListParams, NewConversation,
-        NewConversationItem, ResponseId, ResponseResult, ResponseStorage, StoredResponse,
-    },
-    schema::SchemaConfig,
-};
-
-#[derive(Clone)]
-pub(crate) struct MybackendStore {
-    pool: MyPool,
-    pub(crate) schema: Arc<SchemaConfig>,
-}
-
-impl MybackendStore {
-    pub fn new(config: MybackendConfig) -> Result<Self, String> {
-        let schema = config.schema.clone().unwrap_or_default();
-        schema.validate()?;
-        Ok(Self { pool: build_pool(&config)?, schema: Arc::new(schema) })
-    }
-}
-
-pub(super) struct MybackendConversationStorage { store: MybackendStore }
-impl MybackendConversationStorage { pub fn new(store: MybackendStore) -> Self { Self { store } } }
-
 #[async_trait]
-impl ConversationStorage for MybackendConversationStorage {
+impl ConversationStorage for <Backend>ConversationStorage {
     async fn create_conversation(&self, input: NewConversation) -> ConversationResult<Conversation> {
-        let conv = Conversation::new(input); // generates id + created_at
-        // ...persist; map driver errors with ConversationStorageError::StorageError(e.to_string())
+        let conv = Conversation::new(input);   // id + created_at
+        // persist; map driver errors with ConversationStorageError::StorageError(e.to_string())
         Ok(conv)
     }
-    async fn get_conversation(&self, id: &ConversationId) -> ConversationResult<Option<Conversation>> { todo!() }
-    async fn update_conversation(&self, id: &ConversationId, metadata: Option<ConversationMetadata>) -> ConversationResult<Option<Conversation>> { todo!() }
-    async fn delete_conversation(&self, id: &ConversationId) -> ConversationResult<bool> { todo!() }
+    // get_conversation, update_conversation, delete_conversation
 }
-
-// Likewise: impl ConversationItemStorage for MybackendConversationItemStorage
-//   create_item, link_item, list_items, get_item, is_item_linked, delete_item
-//   (link_items + ResponseStorage::get_response_chain have default impls — override for efficiency)
-// And:     impl ResponseStorage for MybackendResponseStorage
-//   store_response, get_response, delete_response,
-//   list_identifier_responses, delete_identifier_responses
+// ConversationItemStorage: create_item, link_item, list_items, get_item, is_item_linked, delete_item
+//   (link_items and ResponseStorage::get_response_chain have default impls; override for efficiency)
+// ResponseStorage: store_response, get_response, delete_response, list_identifier_responses, delete_identifier_responses
 ```
 
-Errors are PER-DOMAIN, not unified: `ConversationStorageError`, `ConversationItemStorageError`, `ResponseStorageError`. Each has `StorageError(String)`, `SerializationError(#[from] serde_json::Error)`, and a not-found variant. `?` covers serde; wrap driver errors via `.map_err(|e| ...StorageError(e.to_string()))`.
+Errors are per domain: `ConversationStorageError`, `ConversationItemStorageError`, `ResponseStorageError`, each with `StorageError(String)`, `SerializationError(#[from] serde_json::Error)` and a not-found variant; `?` covers serde, `.map_err(|e| ...StorageError(e.to_string()))` covers the driver. `ListParams { limit, order: SortOrder, after: Option<String> }` is cursor-based (`after` is an item-id cursor).
+Verify: `cargo test -p data-connector` → the module's own tests pass.
+Trap: offset pagination compiles; the `after` cursor is what callers send. A write that skips `resolve_extra_column_values` or `tenant` compiles and the tenant-scope cases of `tests/redis_integration.rs`/`tests/postgres_integration.rs` are the only thing that notices.
 
-`ListParams { limit, order: SortOrder, after: Option<String> }` is cursor-based (`after` = item-id cursor) — page from it, don't offset-paginate.
+### 2. Add the config struct
 
-### Step 2: Add the config struct
+File: `crates/data_connector/src/config.rs` — Do: `<Backend>Config` mirroring `RedisConfig` (connection field, `#[serde(default)] pool_max`, `op_timeout_secs` with `op_timeout()`, `schema`, `validate()`, `validate_bounds()`), a `<Backend>` variant on `HistoryBackend` (`Memory` is `#[default]`, then `None`, `Oracle`, `Postgres`, `Redis`), and the re-export in `lib.rs` (`pub use config::{HistoryBackend, MemoryConfig, OracleConfig, PostgresConfig, RedisConfig}`).
+Verify: `cargo check -p data-connector` → compiles.
 
-**File:** `crates/data_connector/src/config.rs`
+### 3. Migrations (SQL backends only)
 
-Add `MybackendConfig` (mirror `RedisConfig`: connection field, `#[serde(default)] pool_max`, `schema: Option<SchemaConfig>`, plus a `validate()`). Add a `Mybackend` variant to the `HistoryBackend` enum (variants: `Memory` (default), `None`, `Oracle`, `Postgres`, `Redis`) and re-export the new config from `lib.rs`.
+File: `crates/data_connector/src/<backend>_migrations.rs` — Do: key-value backends need none. A SQL backend adds `pub(crate) static <BACKEND>_HISTORY_MIGRATIONS: [Migration; N]` (`versioning::Migration`, cf. `POSTGRES_HISTORY_MIGRATIONS`/`ORACLE_HISTORY_MIGRATIONS`, both at 4 with the v4 tenant column on responses, conversations and conversation items), creates tables at start-up (Postgres: `PostgresStore::bootstrap()` in `postgres.rs` creates them and runs `run_postgres_migrations`; Oracle: per-struct `init_schema(conn, schema)` passed to `OracleStore::new`, then `run_oracle_migrations` in `oracle.rs`), with both runners in `versioning.rs` recording versions in `_schema_versions` (`VERSIONS_TABLE`). A new dialect adds its own runner.
+Verify: `cargo test -p data-connector migrations` → the up statements are asserted.
+Trap: a table without the nullable `tenant` column stores every tenant's rows as unscoped; nothing fails until a cross-tenant read.
 
-### Step 3: Migrations (SQL backends only)
+### 4. Wire the factory
 
-Key-value backends (redis) need none. SQL backends add a `mybackend_migrations.rs` (`static MYBACKEND_HISTORY_MIGRATIONS: [versioning::Migration; N]`) and create tables at startup — either in each struct's `async fn new(store) -> Result<Self, _>` (Postgres style) or via per-struct `init_schema(conn, schema)` fns passed to the store constructor (Oracle style) — then have the factory run the dialect's migration runner once tables exist (`create_postgres_storage` in `factory.rs` awaits `run_postgres_migrations`; Oracle uses `run_oracle_migrations` — both in `versioning.rs`, recording applied versions in the `_schema_versions` table, `VERSIONS_TABLE`). A new dialect adds its own runner.
+File: `crates/data_connector/src/factory.rs` — Do: a `HistoryBackend::<Backend> => { .. }` arm in `create_storage` that reads `config.<backend>.ok_or(...)`, calls `validate_bounds()`, builds one store, `store.contact(bound)` once, then the three structs into a `StorageBundle { response_storage, conversation_storage, conversation_item_storage }` and, for a remote store, `bounded(bundle, CallBound::new("<backend>", cfg.op_timeout()))` as the Postgres and Redis arms do (Oracle is not wrapped). Leave the hook block at the end alone. Add `<backend>: Option<&'a <Backend>Config>` to `StorageFactoryConfig` (fields `backend`, `oracle`, `postgres`, `redis`, `memory`, `hook`) and update every literal: the `factory.rs` tests, `tests/conformance.rs`, `tests/postgres_integration.rs`, and `model_gateway/src/app_context.rs`.
+Verify: `cargo test -p data-connector` → compiles the `#[ignore]` suites too.
+Trap: `app_context.rs` is the only production literal; `<backend>: None` there compiles and the backend is unreachable.
 
-### Step 4: Wire into the factory
+### 5. Register the module and wire the gateway and bindings
 
-**File:** `crates/data_connector/src/factory.rs`
+File: `crates/data_connector/src/lib.rs` — Do: `mod <backend>;`. The crate enum alone is unreachable; the gateway selects the backend outside `data_connector`: `model_gateway/src/config/types.rs` gets `<backend>: Option<<Backend>Config>` on `RouterConfig` beside `oracle`/`postgres`/`redis`/`memory`, `config/builder.rs` a `maybe_<backend>` setter like `maybe_redis`; `model_gateway/src/main.rs` adds `"<backend>"` to the `--history-backend` `value_parser = ["memory", "none", "oracle", "postgres", "redis"]`, a `"<backend>" => HistoryBackend::<Backend>` arm in the string `match`, a `build_<backend>_config` arm in the `(oracle, postgres, redis)` tuple match, and `.maybe_<backend>(..)` in the builder chain; `app_context.rs` passes `config.<backend>.as_ref()`. Python: a `<Backend>` variant on `HistoryBackendType` in `bindings/python/src/lib.rs` with its `=> config::HistoryBackend::<Backend>` arm, a `Py<Backend>Config` with `to_config_<backend>` threaded like `redis_config: Option<PyRedisConfig>`/`to_config_redis`, the name in `choices=["memory", "none", "oracle", "postgres", "redis"]` of `--history-backend` in `router_args.py`, and a branch in `router.py:history_backend_from_str` (an unknown name raises `ValueError`); follow @bindings-update.md.
+Verify: `cargo run -p smg --bin smg -- --help | grep history-backend` → lists the name; `cd bindings/python && pytest -q tests/test_arg_parser.py`.
+Trap: clap rejects an unlisted value, but the `_` arm of the string `match` silently means `Memory`.
 
-Add a `HistoryBackend::Mybackend => { ... }` arm in `create_storage`. Build all three structs from one shared store and return a `StorageBundle { response_storage, conversation_storage, conversation_item_storage }` (exactly those three handles). Do NOT touch the hook-wrapping block at the end — it already wraps your structs in `Hooked*` when a `hook` is configured.
+### 6. Tests
 
-```rust
-HistoryBackend::Mybackend => {
-    let cfg = config.mybackend.ok_or("mybackend configuration is required ...")?;
-    let store = MybackendStore::new(cfg.clone())?;
-    StorageBundle {
-        response_storage: Arc::new(MybackendResponseStorage::new(store.clone())),
-        conversation_storage: Arc::new(MybackendConversationStorage::new(store.clone())),
-        conversation_item_storage: Arc::new(MybackendConversationItemStorage::new(store)),
-    }
-}
-```
+File: `crates/data_connector/tests/conformance.rs` — Do: the contract every backend keeps, one scenario per store: memory always (`the_memory_store_keeps_the_item_contract`), Redis, Postgres and Oracle opt-in `#[ignore]` when `DATA_CONNECTOR_TEST_REDIS_URL`/`DATA_CONNECTOR_TEST_POSTGRES_URL`/`DATA_CONNECTOR_TEST_ORACLE_URL` is set; add the new store there. Add `#[cfg(test)] mod tests` to `<backend>.rs` (round-trip each trait, cursor pagination via `ListParams`, not-found returns `Ok(None)`), a `create_storage` smoke test and a missing-config test in `factory.rs` mirroring `test_create_storage_redis_missing_config`, and for a live-server backend `tests/<backend>_integration.rs` modeled on `tests/redis_integration.rs`/`tests/postgres_integration.rs` (`tests/common/mod.rs` has the `Relay` that holds, delays or cuts a connection for the bound tests). Add the backend to the Supported Backends table of `crates/data_connector/README.md`.
+Verify: `cargo test -p data-connector --test conformance`; the `agentic` shard of `scripts/ci_rust_tests.sh` (run by `pr-test-rust.yml`) runs `cargo test -p data-connector --test postgres_integration --test conformance -- --ignored --test-threads=1` against the job's database.
+Trap: a backend missing from `conformance.rs` passes CI with its own tests only.
 
-Also add a `mybackend: Option<&'a MybackendConfig>` field to `StorageFactoryConfig` and update every existing `StorageFactoryConfig { .. }` literal: the `factory.rs` tests, `crates/data_connector/tests/postgres_integration.rs` (compiled by `cargo test -p data-connector` even though its tests are `#[ignore]`), and `model_gateway/src/app_context.rs` — that last one is the only production literal and must pass `config.mybackend.as_ref()`, not `None`.
+### 7. Gate
 
-### Step 5: Register the module + gateway/bindings wiring
+Run `smg:contribute`.
 
-Add `mod mybackend;` to `lib.rs`. The crate enum alone is unreachable — the gateway selects the backend outside `data_connector`, so wire it too:
+## Rules
 
-- `model_gateway/src/config/types.rs`: `mybackend: Option<MybackendConfig>` on `RouterConfig`, beside `oracle` / `postgres` / `redis`; `config/builder.rs`: a `maybe_mybackend` setter mirroring `maybe_redis`.
-- `model_gateway/src/main.rs`: add `"mybackend"` to the `--history-backend` `value_parser = [...]` (clap rejects anything else), a `"mybackend" => HistoryBackend::Mybackend` arm in the string `match` (its `_` arm silently means `Memory`), a `build_mybackend_config` arm in the `(oracle, postgres, redis)` tuple match, and `.maybe_mybackend(mybackend)` in the builder chain.
-- `model_gateway/src/app_context.rs`: `mybackend: config.mybackend.as_ref()` in its `StorageFactoryConfig` literal.
-- Python: a `Mybackend` variant on `HistoryBackendType` in `bindings/python/src/lib.rs` with its `=> config::HistoryBackend::Mybackend` arm, plus a `PyMybackendConfig` / `to_config_mybackend` threaded like `redis_config: Option<PyRedisConfig>`; add `"mybackend"` to the `--history-backend` `choices=[...]` in `bindings/python/src/smg/router_args.py` and a branch in `router.py:history_backend_from_str` (follow @bindings-update.md).
-
-### Step 6: Tests
-
-Add `#[cfg(test)] mod tests` to `mybackend.rs` (round-trip each trait; cursor pagination via `ListParams`; not-found returns `Ok(None)`). Add a `create_storage` smoke test arm in `factory.rs` and a missing-config error test, mirroring `test_create_storage_redis_missing_config`. A backend needing a live server gets an opt-in `#[ignore]` suite in `crates/data_connector/tests/mybackend_integration.rs` gated on an env URL — model on `tests/postgres_integration.rs` (`DATA_CONNECTOR_TEST_POSTGRES_URL`; `cargo test -p data-connector --test postgres_integration -- --ignored --test-threads=1`, which CI runs in `pr-test-rust.yml`).
-
-**Verify:** `cargo test -p data-connector`
-
-## Key Rules
-
-- Three structs / three traits, never a single `StorageBackend`. Hooks are wrapped by `create_storage`; the old `hooks.on_write/on_delete` calls do not exist.
-- Per-domain error enums — there is no unified `StorageError` type.
-- Respect the per-table `TableConfig` (`col`/`is_skipped`) and append `resolve_extra_column_values` on writes so tenancy/hook columns persist.
-- The crate enum is not enough — a backend is unreachable until `model_gateway` (`main.rs` value_parser + match, `RouterConfig`, `builder.rs`, `app_context.rs`) and the Python launcher know its name.
-- Package `data-connector` (v2.3.3; depended on from the workspace as `smg-data-connector`).
+- Three structs, three traits, never a single `StorageBackend`; hooks are wrapped by `create_storage`, the old `hooks.on_write/on_delete` calls do not exist.
+- Per-domain error enums; there is no unified `StorageError` type.
+- Every call to a remote store runs under `op_timeout_secs` through `Bounded*Storage`; the gateway answers 503 when the bound is exceeded, so a backend never adds its own timeout layer.
+- `StoredResponse` and `Conversation` carry `tenant`; a record stored under a tenant is served only to that tenant, one stored under none to everyone (`tenant_scope_allows`).

@@ -9,6 +9,7 @@ SMG's CI rejects, after the fact, what this hook blocks before the fact:
   * a push from a branch that does not match <type>/<desc> or <username>/<desc>
   * a push whose new commits are unsigned or carry AI attribution
 
+The regexes come from data/rules.json, the same file scripts/gate.sh and the contribute skill use.
 Anywhere outside those two repositories the hook is a no-op. On a block it prints the
 documented PreToolUse JSON with permissionDecision "deny" and a reason the agent can act on.
 """
@@ -21,11 +22,21 @@ import shlex
 import subprocess
 import sys
 
-SMG_BRANCH = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(/[a-zA-Z0-9._-]+)+$")
-GUIDE_BRANCH = re.compile(r"^(setup|feat|fix|docs|chore|refactor)/[A-Za-z0-9._-]+$")
-AI_TRAILER = re.compile(r"(?im)^\s*(co-authored-by|signed-off-by)\s*:.*\b(claude|anthropic)\b")
+RULES = json.loads((os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "rules.json") and
+                    open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "rules.json"), encoding="utf-8").read()))
 SIGNOFF = re.compile(r"(?m)^Signed-off-by:")
-MAIN_BRANCHES = {"main", "master"}
+
+
+def rule(kind: str, key: str):
+    return RULES[kind][key]
+
+
+def branch_ok(kind: str, branch: str) -> bool:
+    return branch in rule(kind, "protected_branches") or re.match(rule(kind, "branch_regex"), branch) is not None
+
+
+def ai_trailer(kind: str, text: str) -> bool:
+    return re.search(rule(kind, "ai_trailer_regex"), text, re.IGNORECASE | re.MULTILINE) is not None
 
 
 def repo_kind(cwd: str) -> tuple[str | None, str | None]:
@@ -83,16 +94,16 @@ def short_flag(tok: str, letter: str) -> bool:
 def check_commit(seg: str, toks: list[str], cmd: str, kind: str, root: str) -> None:
     if "--no-verify" in toks or any(short_flag(t, "n") for t in toks if t != "-m"):
         deny("This repository runs pre-commit hooks (rustfmt, clippy, DCO sign-off, no-AI-attribution, branch naming) that CI re-checks. Do not bypass them with --no-verify / -n; fix what the hook reports instead.")
-    if AI_TRAILER.search(cmd):
+    if ai_trailer(kind, cmd):
         deny("CI rejects any Co-authored-by or Signed-off-by line that names Claude or anthropic.com (see .pre-commit-config.yaml `no-ai-co-author` and the PR workflow). Remove that trailer from the commit message.")
     amend_keep = "--amend" in toks and "--no-edit" in toks
     signed = "--signoff" in toks or any(short_flag(t, "s") for t in toks)
     if not signed and not amend_keep:
         deny("Every commit needs a DCO sign-off matching your git user.name/user.email (scripts/dco-check.sh; CI fails without it). Re-run as `git commit -s ...` (or `git commit --amend -s --no-edit` to sign the last commit).")
-    if kind == "smg" and not re.search(r"\b(checkout\s+-b|switch\s+-c)\b", cmd):
+    if not re.search(r"\b(checkout\s+-b|switch\s+-c)\b", cmd):
         branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
-        if branch in MAIN_BRANCHES:
-            deny(f"You are on `{branch}`. SMG's pre-commit forbids committing to it (`no-commit-to-branch`), and PRs come from branches named <type>/<desc> or <username>/<desc>. Create a branch first: `git checkout -b feat/<short-description>`.")
+        if branch in rule(kind, "no_commit_to"):
+            deny(f"You are on `{branch}`. This repository forbids committing to it (pre-commit `no-commit-to-branch` in SMG), and PRs come from branches named {rule(kind, 'branch_rule')}. Create a branch first: `git checkout -b feat/<short-description>`.")
 
 
 def check_push(seg: str, toks: list[str], kind: str, root: str) -> None:
@@ -104,12 +115,8 @@ def check_push(seg: str, toks: list[str], kind: str, root: str) -> None:
     branch = git(root, "rev-parse", "--abbrev-ref", "HEAD")
     if not branch or branch == "HEAD":
         return
-    if kind == "smg":
-        if branch not in MAIN_BRANCHES and not SMG_BRANCH.match(branch):
-            deny(f"Branch `{branch}` does not match SMG's convention `<type>/<description>` or `<username>/<description>` (regex ^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(/[a-zA-Z0-9._-]+)+$). CI closes PRs from such branches. Rename first: `git branch -m feat/<short-description>` and push that.")
-    elif kind == "guide":
-        if branch not in MAIN_BRANCHES and not GUIDE_BRANCH.match(branch):
-            deny(f"Branch `{branch}` does not match smg-dev-guide's convention setup/*, feat/*, fix/*, docs/*, chore/* or refactor/*. Rename first: `git branch -m docs/<short-description>`.")
+    if not branch_ok(kind, branch):
+        deny(f"Branch `{branch}` does not match this repository's convention {rule(kind, 'branch_rule')} (regex {rule(kind, 'branch_regex')}). CI closes PRs from such branches. Rename first: `git branch -m feat/<short-description>` and push that.")
     # commits that would be pushed: unsigned or AI-attributed ones fail CI
     base = ""
     for cand in ("@{u}", "origin/main", "origin/master"):
@@ -124,7 +131,7 @@ def check_push(seg: str, toks: list[str], kind: str, root: str) -> None:
         body = git(root, "log", "-1", "--format=%B", sha)
         if not SIGNOFF.search(body):
             bad_sign.append(sha[:10])
-        if AI_TRAILER.search(body):
+        if ai_trailer(kind, body):
             bad_ai.append(sha[:10])
     if bad_sign or bad_ai:
         parts = []

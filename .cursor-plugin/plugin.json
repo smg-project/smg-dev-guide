@@ -1,8 +1,8 @@
 {
   "name": "smg",
   "displayName": "SMG Development Assistant",
-  "description": "Agent-native development guide for the Shepherd Model Gateway: orientation with a live crate map, 21 subsystem recipes with verification steps, checklist PR review, a one-command pre-PR gate, CI-rule guard hooks, and a self-sync loop that keeps the guide verified against SMG HEAD",
-  "version": "0.3.0",
+  "description": "Agent-native development guide for the Shepherd Model Gateway: a live crate map, 27 subsystem recipes with a verify step per action, per-subsystem review checklists, the house style (vocabulary, performance, interfaces, structure) with evidence, a one-command pre-PR gate, CI-rule guard hooks, and a self-sync loop (anchor, coverage and vocabulary checkers) that keeps the guide verified against SMG HEAD",
+  "version": "0.4.0",
   "author": {
     "name": "LightSeek"
   },

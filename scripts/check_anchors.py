@@ -59,7 +59,7 @@ SOURCE_GLOBS = (
     "*.rs", "*.py", "*.go", "*.proto", "*.toml", "*.yaml", "*.yml", "*.wit", "*.sh", "*.json",
     "*.md", "*.ini", "*.txt", "Makefile", "Dockerfile*",
 )
-SKILL_DIRS = ("skills", "commands", "agents")
+SKILL_DIRS = ("skills", "commands", "agents", "upstream")
 # A multi-token span starting with one of these is a command of another tool: its --flags are not SMG anchors.
 EXTERNAL_TOOLS = {
     "cargo", "git", "pytest", "python", "python3", "pip", "pip3", "make", "ruff", "mypy", "pre-commit", "gh",
@@ -120,12 +120,12 @@ def looks_like_path(tok: str) -> bool:
         return True
     if "/" in tok:
         return tok.split("/", 1)[0] in TOP_DIRS
-    return tok.endswith(BARE_FILE_EXTS) and "." in tok[:-1]
+    return tok.endswith(BARE_FILE_EXTS) and re.fullmatch(r"[\w.-]*\w\.[a-z0-9]+", tok) is not None  # a name before the dot: `.rs` alone is an extension, not a file
 
 
 def classify(span: str) -> list[tuple[str, str]]:
     """Turn one code span into zero or more (kind, value) anchors."""
-    s = span.strip().strip(",.;:")
+    s = span.strip().rstrip(",.;:").lstrip(",;:")   # keep a leading dot: .github/..., .pre-commit-config.yaml
     if len(s) < 3 or s.startswith(("smg:", "@", "/", "$", "#", "<", "-m", "!")):
         return []
     if any(ch in s for ch in " \t"):
@@ -327,6 +327,14 @@ def main() -> int:
     anchors: list[Anchor] = []
     for f in md_files:
         anchors.extend(extract(f, guide, args.include_fenced))
+    data_file = guide / "data" / "subsystems.json"
+    if data_file.is_file() and not args.files:
+        data = json.loads(data_file.read_text(encoding="utf-8"))
+        for i, area in enumerate(data.get("areas", []), 1):
+            for p in area.get("paths", []):
+                anchors.append(Anchor("data/subsystems.json", i, "path", p))
+        for lane in data.get("lanes", {}):
+            anchors.append(Anchor("data/subsystems.json", 0, "literal", lane))
 
     index = Index(smg)
     guide_files = {str(p.relative_to(guide)) for p in guide.rglob("*") if ".git" not in p.parts}

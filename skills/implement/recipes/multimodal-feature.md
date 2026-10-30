@@ -4,197 +4,110 @@ verified: 176ce3ae88f7f857441853c7dc2e087e3277b5c0
 level: anchors
 watch:
   - crates/multimodal/src/
+  - crates/multimodal/tests/preprocess/
+  - crates/multimodal/scripts/
   - model_gateway/src/routers/grpc/multimodal/
   - crates/engine_zmq_adapter/src/multimodal.rs
+exemplars:
+  - 8bb7fa65   # Gemma 4: processor + spec for images and video, with a fingerprint golden
+  - b19a624f   # Nemotron-H Omni: image, audio and video; capability.rs, plan.rs and process.rs changes
+  - 62101268   # Muse Spark: nested processor_config.json sections (config.rs), video frame timestamps (process.rs)
 ---
 
-# Adding a Vision Model to SMG
+# Add a vision model
 
-Image preprocessing for vision LLMs lives in the `llm-multimodal` crate (lib `llm_multimodal`, dir `crates/multimodal/`). The `MediaConnector` fetches an image into an `ImageFrame`, a `VisionPreProcessor` turns `DynamicImage`s into a `PreprocessedEncoderInputs` tensor bundle, and a `ModelProcessorSpec` decides placeholder tokens + prompt expansion. Adding a model = a processor + a spec that constructs it + one registration (the spec's `LazySpec` entry).
+Media preprocessing lives in crate `llm-multimodal` (lib `llm_multimodal`, dir `crates/multimodal/`). `MediaConnector` (`media.rs`) fetches a `MediaContentPart` into an `Arc<ImageFrame>` / `Arc<VideoClip>`; a `VisionPreProcessor` (`vision/processor.rs`) turns `DynamicImage`s into a `PreprocessedEncoderInputs` bundle (`encoder_inputs.rs`); a `ModelProcessorSpec` (`registry/traits.rs`) chooses placeholder tokens and expands them to `PromptReplacement`s; the tracker (`tracker.rs`) emits `TrackerOutput`. The gateway finds the spec through `ModelRegistry::lookup` (`registry/mod.rs`) and the spec constructs its own processors. Worked pair: `vision/processors/phi3_vision.rs` (`Phi3VisionProcessor`) and `registry/phi3_v.rs` (`Phi3VisionSpec`).
 
-## Pipeline
+Not this recipe:
+- Worker selection, wire assembly and media caches (`model_gateway/src/routers/grpc/multimodal/worker.rs`, `assemble.rs`, `pixel_cache.rs`).
+- Audio-only models (`registry/qwen3_asr.rs`, `audio/processor.rs`): same spec contract, `audio_processor()` instead of `vision_processor()`.
 
-```
-MediaContentPart (Text | ImageUrl | ImageData | ImageEmbeds | AudioUrl | AudioData | VideoUrl | VideoData)   // types.rs
-  -> MediaConnector::fetch_image(MediaSource::{Url,DataUrl,InlineBytes,File}, ImageFetchConfig { detail })  // media.rs, Blake3 hash
-  -> Arc<ImageFrame> { image: DynamicImage, raw_bytes, detail, source, hash }
-  -> VisionPreProcessor::preprocess(&[DynamicImage], &PreProcessorConfig) -> PreprocessedEncoderInputs
-  -> ModelProcessorSpec::prompt_replacements(...) -> Vec<PromptReplacement>  // expands placeholder tokens
-  -> tracker emits TrackerOutput { data: MultiModalData, uuids: MultiModalUUIDs }
-```
+## Inputs
 
-Video is a first-class modality: `MediaConnector::fetch_video(MediaSource::..., VideoFetchConfig { min_frames, max_frames, sample_fps })` returns an `Arc<VideoClip>`, `VisionPreProcessor` has default `preprocess_video` / `preprocess_video_rgb` hooks, and `Modality::Video` flows through the same `PreprocessedEncoderInputs` contract (see `media.rs`, `vision/processor.rs`, `types.rs`).
-
-The worked example below mirrors the existing **Phi3-Vision** pair: `vision/processors/phi3_vision.rs` (`Phi3VisionProcessor`) and `registry/phi3_v.rs` (`Phi3VisionSpec`).
+| Input | Example | Used in |
+|---|---|---|
+| Family match | `model_id` substring, or `config.json` `model_type` | 3 (`matches`) |
+| Placeholder token / id | `<image>`, `image_token_id` | 3 |
+| Modalities and default counts | image 4, video 1 | 3 (`modality_limits`) |
+| HF reference processor + config | `image_processing_<model>.py`, `preprocessor_config.json` | 1, 5 |
+| Per-item side tensors | `image_sizes`, `image_grid_thw` | 3 (`field_layouts`) |
+| Engines that serve it | vLLM, TokenSpeed | 6, 7 |
 
 ## Steps
 
-### Step 1: Implement the processor
+### 1. Implement the processor
 
-Implement `VisionPreProcessor` (`vision/processor.rs`). `preprocess` returns `PreprocessedEncoderInputs` built with `::new` — a single constructor generic over dimensionality that handles both 4D `[B,C,H,W]` and 5D (e.g. Phi3's `[B,num_crops+1,C,H,W]`) arrays via `into_dyn()` internally — plus `.with_extra(key, ModelSpecificValue)` for model-specific tensors. Reuse `transforms` for resize/normalize.
+File: `crates/multimodal/src/vision/processors/<model>.rs` — Do: implement `VisionPreProcessor`: `default_mean` / `default_std`; `preprocess(&self, images: &[DynamicImage]) -> Result<PreprocessedEncoderInputs, TransformError>` (resize and normalize with `vision/transforms.rs`, then `PreprocessedEncoderInputs::new(encoder_input, feature_token_counts, item_sizes)` — `new` takes any array through `From<Array<f32, D>> for EncoderInput`, so 4D `[B,C,H,W]` and 5D like Phi3's `[B,num_crops+1,C,H,W]` share one constructor; side tensors go in with `.with_extra(key, ModelSpecificValue)`); `calculate_num_tokens(&self, width, height) -> Result<usize, TransformError>`; `model_name`. Take sizes from the HF config the spec hands you (`PreProcessorConfig::get_target_size`, `get_patch_size`), as `Phi3VisionProcessor::with_normalization_of` does. Video needs `preprocess_video` / `preprocess_video_rgb`, whose defaults return `TransformError::ShapeError`.
+Verify: `cargo test -p llm-multimodal vision::processors::<model>` → the module's unit tests pass.
+Trap: mean, std or patch size hardcoded in `preprocess` compiles, and the model's `preprocessor_config.json` is then ignored without a warning.
 
-**File:** `crates/multimodal/src/vision/processors/mymodel.rs`
+### 2. Export the processor
+
+File: `crates/multimodal/src/vision/processors/mod.rs` — Do: add `pub mod <model>;` and `pub use <model>::<Model>Processor;`. There is no processor registry: the spec's `vision_processor()` (or `audio_processor()`) constructs it.
+Verify: `cargo check -p llm-multimodal`
+Trap: a processor nobody constructs is dead code that compiles — `Phi4VisionProcessor` and `PixtralProcessor` ship with no spec and no prompt-expansion contract.
+
+### 3. Implement the spec
+
+File: `crates/multimodal/src/registry/<model>.rs` — Do: implement `ModelProcessorSpec`: `name`; `matches` on `ModelMetadata { model_id, tokenizer, config }` (`config_model_type()`); `placeholder_token` / `placeholder_token_id` via `metadata.token_id(..)` or `metadata.config_u32(&["image_token_id"])`; `modality_limits`; `vision_processor(model_config, preprocessor_config, modality)`; `prompt_replacements` driven by `preprocessed.feature_token_counts`. For video or audio add the `Modality` to `modality_limits` and override `placeholder_token_for` / `placeholder_token_id_for` / `prompt_replacements_for` (or return `ModalityHooks` from `hooks(modality)`): their defaults answer `ModelRegistryError::UnsupportedModality` for anything but `Image`, and `plan.rs` / `process.rs` call them before expansion (`registry/qwen3_vl.rs` has every piece).
 
 ```rust
-use image::DynamicImage;
-use crate::vision::{
-    processor::{VisionPreProcessor, PreprocessedEncoderInputs},
-    preprocessor_config::PreProcessorConfig,
-    transforms::TransformError,
-};
-
-pub const MYMODEL_MEAN: [f64; 3] = [0.5, 0.5, 0.5];
-pub const MYMODEL_STD: [f64; 3] = [0.5, 0.5, 0.5];
-
-#[derive(Debug, Clone, Default)]
-pub struct MyModelProcessor;
-
-impl MyModelProcessor {
-    pub fn new() -> Self { Self }
+fn vision_processor(&self, _cfg: &Value, pre: &PreProcessorConfig, modality: Modality)
+    -> RegistryResult<Box<dyn VisionPreProcessor>> {
+    match modality {
+        Modality::Image => Ok(Box::new(<Model>Processor::new().with_normalization_of(pre))),
+        _ => Err(ModelRegistryError::UnsupportedModality { spec: self.name(), modality }),
+    }
 }
-
-impl VisionPreProcessor for MyModelProcessor {
-    fn default_mean(&self) -> [f64; 3] { MYMODEL_MEAN }
-    fn default_std(&self) -> [f64; 3] { MYMODEL_STD }
-
-    fn preprocess(
-        &self,
-        images: &[DynamicImage],
-        config: &PreProcessorConfig,
-    ) -> Result<PreprocessedEncoderInputs, TransformError> {
-        // resize -> normalize with default_mean()/default_std() -> stack into Array4<f32>
-        // feature_token_counts[i] = calculate_num_tokens(w, h, config)
-        // item_sizes[i] = (orig_w, orig_h)
-        todo!("build encoder_input, then PreprocessedEncoderInputs::new(encoder_input, feature_token_counts, item_sizes)")
-    }
-
-    fn calculate_num_tokens(&self, width: u32, height: u32, config: &PreProcessorConfig) -> usize {
-        todo!("tokens this image expands to, e.g. (h/patch)*(w/patch)")
-    }
-
-    fn model_name(&self) -> &'static str { "mymodel" }
+fn prompt_replacements(&self, m: &ModelMetadata, p: &PreprocessedEncoderInputs)
+    -> RegistryResult<Vec<PromptReplacement>> {
+    let (token, id) = (self.placeholder_token(m)?, self.placeholder_token_id(m)?);
+    Ok(p.feature_token_counts.iter()
+        .map(|&n| PromptReplacement::repeated(Modality::Image, &token, id, n)).collect())
 }
 ```
 
-**Verify:** `cargo test -p llm-multimodal vision::processors::mymodel`
+Verify: `cargo test -p llm-multimodal registry::<model>`
+Trap: a hand-counted placeholder count compiles; only `feature_token_counts` matches the tensors the processor emitted.
 
-**Anti-pattern:** Hardcoding mean/std/patch_size in `preprocess` instead of reading `config` (`PreProcessorConfig::get_target_size`, `get_patch_size`). The HF preprocessor config must win when present.
+### 4. Register the spec
 
-### Step 2: Export the processor
+File: `crates/multimodal/src/registry/mod.rs` — Do: add `mod <model>;`, `use <model>::<Model>Spec;` and `LazySpec::new(|| Box::new(<Model>Spec))` to the `Vec` in `ModelRegistry::new()`, before any more general spec it could also match (`Qwen3VLVisionSpec` precedes `QwenVLVisionSpec`). `LazySpec::new` takes the factory only — the name comes from `name()`; `lookup` returns the first `matches`.
+Verify: `cargo test -p llm-multimodal registry::`
+Trap: `mod` + `use` without the `LazySpec` entry compiles; `ModelRegistry::lookup` returns `None` and Step 5's `the_spec_resolves_the_family_and_builds_its_processor` fails.
 
-**File:** `crates/multimodal/src/vision/processors/mod.rs`
+### 5. Pin preprocessing to the reference with a golden
 
-```rust
-pub mod mymodel;
-pub use mymodel::MyModelProcessor;
-```
+File: `crates/multimodal/scripts/generate_<model>_preprocess_fingerprints.py`, `crates/multimodal/tests/fixtures/golden/<model>_preprocess_fingerprints.json`, `crates/multimodal/tests/preprocess/<model>_preprocess_golden.rs` — Do: the script runs the HF processor unmodified over seeded images (`make_seeded_image` in `tests/preprocess/mod.rs` regenerates the same pixels) and PNG fixtures, recording sizes, token counts and FNV-1a fingerprints (`fnv1a`, `fnv1a_f32`) of the exact bytes the engine receives; the Rust module reproduces every one, resolving the family through `ModelRegistry::new().lookup(..)`. Register it with `mod <model>_preprocess_golden;` in `crates/multimodal/tests/preprocess/mod.rs`. Model on `gemma4_preprocess_golden.rs` and `generate_gemma4_preprocess_fingerprints.py` (which also pin the reference file's SHA-256, `REFERENCE_SHA256`).
+Verify: `cargo test -p llm-multimodal --test preprocess_tests <model>` → `preprocess_matches_the_reference_fingerprints` passes.
+Trap: a module file missing from `tests/preprocess/mod.rs` is never compiled, so its test cannot fail.
 
-There is no separate processor registry: the spec you write in Step 3 constructs the processor in its `vision_processor()` method (and `audio_processor()` for audio), so the processor only needs to be exported here. See `registry/phi3_v.rs`, whose `vision_processor` returns `Phi3VisionProcessor::new().with_normalization_of(preprocessor_config)` for `Modality::Image` and `ModelRegistryError::UnsupportedModality` for anything else.
+### 6. Teach the gateway the family
 
-**Verify:** `cargo check -p llm-multimodal`
+File: `model_gateway/src/routers/grpc/multimodal/{capability,config,plan,process}.rs` — Do: `capability.rs::runtime_supports_modality` is the runtime × modality matrix; `ensure_model_accepts_media` refuses an (engine, modality) pair no worker of the model takes at preparation, before any fetch or decode, and `ensure_backend_supports_modalities` repeats it at worker selection — extend the matrix (and `runtime_reads_format` for a new `EncoderInputFormat`) when the family brings an engine a modality or format it did not have. `config.rs` (`load_image_preprocessor_config`, `load_video_preprocessor_config`) reads `preprocessor_config.json`, the nested `image_processor` / `feature_extractor` sections of `processor_config.json`, and `video_preprocessor_config.json`; `plan.rs` resolves anchors with `placeholder_token_for` (and `rendered_marker_for`); `process.rs` builds processors through `MultimodalModelConfig::vision_processors` and expands with `prompt_replacements_for`.
+Verify: `cargo test -p smg routers::grpc::multimodal` → `capability_matrix_matches_backend_support` passes.
+Trap: a modality the crate preprocesses but the matrix omits is refused at preparation (`unsupported_modality_message`) with no hint that the spec supports it.
 
-**Anti-pattern:** Looking for a `register("mymodel", ...)` call to add. Processor selection follows spec selection (Step 4's ordered `Vec`); a processor nobody constructs is dead code.
+### 7. Worker-side anchor parity (only when the engine expands anchors itself)
 
-### Step 3: Implement the spec
+File: `crates/multimodal/scripts/check_worker_anchor_parity.py` — Do: a spec returning `true` from `worker_expandable(modality)` (default `false`; `ModalityHooks::worker_expandable`) lets the router send one anchor token per item for a vLLM worker to expand. Add the family to the script's `MODELS` table and run it against vLLM (9c2b7150).
+Verify: `python crates/multimodal/scripts/check_worker_anchor_parity.py --model <model>` → the anchor becomes exactly one placeholder range.
+Trap: an anchor that is not the single token vLLM's prompt updates target passes every Rust test and corrupts prompts only in worker mode.
 
-Implement `ModelProcessorSpec` (`registry/traits.rs`). `matches` is keyed by `ModelMetadata { model_id, tokenizer, config }`; pull token ids from `metadata.token_id(...)` or `metadata.config_u32(&["image_token_id"])`. `prompt_replacements` builds one `PromptReplacement` per image, expanding the placeholder to `feature_token_counts` copies. `modality_limits` is a default, not a hard cap: `validate_media_request` (`registry/traits.rs`) lets a deployment raise or lower it via `SMG_IMAGE_MAX_COUNT` / `SMG_VIDEO_MAX_COUNT` / `SMG_AUDIO_MAX_COUNT`, but an override never enables a modality the spec did not declare.
+### 8. Servicer tokenizer bundle (only when the spec reads a file it does not ship)
 
-**File:** `crates/multimodal/src/registry/mymodel.rs`
+File: `grpc_servicer/smg_grpc_servicer/tokenizer_bundle.py` — Do: the gateway reads a worker-served model's tokenizer and processor files from the ZIP the servicer streams; `TOKENIZER_FILES` / `TOKENIZER_GLOBS` list them (631ce06c added `processor_config.json` and `video_preprocessor_config.json`). New tokens for unit tests go into `crates/tokenizer/src/mock.rs` (`with_tokens`).
+Verify: `pytest grpc_servicer/tests/test_tokenizer_bundle.py`
+Trap: a file missing from the bundle makes the loader fall back silently (`registry_get_or_load_falls_back_when_preprocessor_config_missing`), so the processor runs on its constants.
 
-```rust
-use std::collections::HashMap;
-use serde_json::{json, Value};
-use crate::{
-    encoder_inputs::PreprocessedEncoderInputs,
-    registry::{ModelMetadata, ModelProcessorSpec, ModelRegistryError, RegistryResult},
-    types::{Modality, PromptReplacement, TokenId},
-    vision::{preprocessor_config::PreProcessorConfig, processor::VisionPreProcessor, processors::MyModelProcessor},
-};
+### 9. Gate
 
-pub(super) struct MyModelSpec;
+Run `smg:contribute`. Clippy runs `--all-features`, which enables `opencv-video` and needs system OpenCV: `make opencv-deps` (`scripts/install_opencv.sh`) once.
 
-impl ModelProcessorSpec for MyModelSpec {
-    fn name(&self) -> &'static str { "mymodel" }
+## Rules
 
-    fn matches(&self, metadata: &ModelMetadata) -> bool {
-        let id = metadata.model_id.to_ascii_lowercase();
-        id.contains("mymodel")
-            || metadata.config_model_type().is_some_and(|mt| mt == "mymodel")
-    }
-
-    fn placeholder_token(&self, _metadata: &ModelMetadata) -> RegistryResult<String> {
-        Ok("<|image|>".to_owned())
-    }
-
-    fn placeholder_token_id(&self, metadata: &ModelMetadata) -> RegistryResult<TokenId> {
-        metadata.token_id("<|image|>")
-    }
-
-    fn modality_limits(&self, _m: &ModelMetadata) -> RegistryResult<HashMap<Modality, usize>> {
-        Ok(HashMap::from([(Modality::Image, 4)]))
-    }
-
-    fn processor_kwargs(&self, _m: &ModelMetadata) -> RegistryResult<Value> {
-        Ok(json!({}))
-    }
-
-    fn vision_processor(
-        &self,
-        _model_config: &Value,
-        preprocessor_config: &PreProcessorConfig,
-        modality: Modality,
-    ) -> RegistryResult<Box<dyn VisionPreProcessor>> {
-        match modality {
-            // Phi3-Vision applies `.with_normalization_of(preprocessor_config)` here.
-            Modality::Image => Ok(Box::new(MyModelProcessor::new())),
-            _ => Err(ModelRegistryError::UnsupportedModality { spec: self.name(), modality }),
-        }
-    }
-
-    fn prompt_replacements(
-        &self,
-        metadata: &ModelMetadata,
-        preprocessed: &PreprocessedEncoderInputs,
-    ) -> RegistryResult<Vec<PromptReplacement>> {
-        let token_id = self.placeholder_token_id(metadata)?;
-        let token = self.placeholder_token(metadata)?;
-        Ok(preprocessed
-            .feature_token_counts
-            .iter()
-            .map(|&count| PromptReplacement::repeated(Modality::Image, &token, token_id, count))
-            .collect())
-    }
-}
-```
-
-**Verify:** `cargo test -p llm-multimodal registry::mymodel`
-
-**Anti-pattern:** Hand-counting placeholder tokens. Drive `prompt_replacements` off `preprocessed.feature_token_counts` so the count always matches the tensors the processor emitted.
-
-### Step 4: Register the spec
-
-**File:** `crates/multimodal/src/registry/mod.rs`
-
-Add `mod mymodel;`, `use mymodel::MyModelSpec;`, and a `LazySpec` entry in `ModelRegistry::new()` (order it before any more-general spec it could collide with). `LazySpec::new` takes the factory closure only — the spec name comes from `ModelProcessorSpec::name()`:
-
-```rust
-LazySpec::new(|| Box::new(MyModelSpec)),
-```
-
-**Verify:** `cargo test -p llm-multimodal`
-
-**Anti-pattern:** Adding the `mod`/`use` but forgetting the `LazySpec` entry, so `ModelRegistry::lookup` never returns the spec.
-
-### Step 5: Quality gate
-
-Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings. Clippy runs `--all-features`, which turns on this crate's `opencv-video` feature and needs system OpenCV — run `make opencv-deps` (`scripts/install_opencv.sh`) once first.
-
-## Critical Rules
-
-- Verify against `crates/multimodal/src/lib.rs` exports: content type is `MediaContentPart` (not `ChatContentPart`); the tracker yields `TrackerOutput`, not any `MultiModalInputs`.
-- `field_layouts` defaults to `{"pixel_values": Batched}` and **any key not listed is treated as shared — replicated across every media item** (`registry/traits.rs:ModelProcessorSpec::field_layouts`; `crates/engine_zmq_adapter/src/multimodal.rs`, `MmField::Batched` / `MmFlatField`: batched keys index row `i`, flat keys slice by the cumulative sizes tensor, everything else is shared). So declare **every** per-item `model_specific` side tensor as `Batched` (Phi3-Vision: `image_sizes`; Qwen3-VL: `image_grid_thw`, `patches_per_image`), and reserve `FieldLayout::flat("patches_per_image")` for a patchified/flat `pixel_values` (see `qwen3_vl.rs`). The layout key stays the logical `"pixel_values"` HF/vLLM kwarg even though the struct field is `encoder_input`. That map is the legacy shape: multi-modality specs override `encoder_field_layouts_for(modality) -> EncoderFieldLayouts` instead (`registry/qwen3_omni.rs`, `registry/qwen3_asr.rs`, `registry/inkling.rs`), and the trait default bridges via `EncoderFieldLayouts::from_legacy_fields(self.field_layouts())`.
-- `PreprocessedEncoderInputs::new` is generic over dimensionality (calls `.into_dyn()`), so the same constructor takes 4D and 5D `encoder_input` arrays; the `channels`/`height`/`width` accessors error on non-4D/5D shapes.
-- Registry lookup is `ModelRegistry::lookup` (`registry/mod.rs`) over the spec `Vec`: first `matches` wins, so a specific spec like `Qwen3VLVisionSpec` must precede a general one like `QwenVLVisionSpec`. Each spec builds its own processor in `vision_processor` / `audio_processor`, so there is no processor registry to keep in sync with it.
-- Processor and spec sets are NOT 1:1: `Phi4VisionProcessor` and `PixtralProcessor` exist (`vision/processors/`) with no registered `ModelProcessorSpec`. A processor without a spec preprocesses tensors but has no placeholder/prompt-expansion contract.
-- For video, all four pieces are required (see `qwen3_vl.rs`): add `Modality::Video` to `modality_limits`; override `placeholder_token_for` / `placeholder_token_id_for`, whose defaults return `UnsupportedModality` for anything but `Image` and which `model_gateway/src/routers/grpc/multimodal/plan.rs` + `process.rs` call *before* expansion; override the erroring `VisionPreProcessor::preprocess_video` / `preprocess_video_rgb` defaults; emit `Modality::Video` replacements from `prompt_replacements_for`. Miss any one and video requests fail at planning.
-- All media flows through `MediaConnector`: honor `MediaConnectorConfig` (`allowed_domains`; `allowed_local_media_path`, which gates `MediaSource::File` — otherwise `MediaConnectorError::DisallowedLocalPath`; `fetch_timeout` default 10s); image, video and audio bytes are Blake3-hashed (`hasher.rs`) for dedup.
+- `field_layouts` defaults to `{"pixel_values": Batched}` and any key not listed is shared — replicated to every item (`crates/engine_zmq_adapter/src/multimodal.rs`: `MmField::Batched` indexes row i, `MmFlatField` slices by the sizes tensor, the rest is shared). Declare every per-item side tensor `Batched` (Phi3: `image_sizes`; Qwen3-VL: `image_grid_thw`, `patches_per_image`), keep `FieldLayout::flat("patches_per_image")` for a patchified `pixel_values`, and key the logical `"pixel_values"` even though the field is `encoder_input`. Multi-modality specs override `encoder_field_layouts_for(modality) -> EncoderFieldLayouts` (`qwen3_vl.rs`, `qwen3_omni.rs`, `qwen3_asr.rs`, `inkling.rs`, `nemotron_omni.rs`, `minimax_m3.rs`); the default bridges through `EncoderFieldLayouts::from_legacy_fields`.
+- `modality_limits` is a default: `validate_media_request` lets `SMG_IMAGE_MAX_COUNT` / `SMG_VIDEO_MAX_COUNT` / `SMG_AUDIO_MAX_COUNT` raise or lower it but never enables an undeclared modality (`limit_override_does_not_enable_undeclared_modality`).
+- Types (`lib.rs` exports): `MediaContentPart` is `Text | ImageUrl | ImageData | ImageEmbeds | AudioUrl | AudioData | VideoUrl | VideoData` (`types.rs`), not `ChatContentPart`; `Modality` is `Image | ImageEmbeds | Audio | Video`; the tracker yields `TrackerOutput`, not `MultiModalInputs`.
+- All media flows through `MediaConnector` and `MediaConnectorConfig`: `allowed_domains`; `allowed_local_media_path` gates `MediaSource::File` (else `MediaConnectorError::DisallowedLocalPath`); `fetch_timeout` 10 s, `video_fetch_timeout` 30 s. `fetch_video(.., VideoFetchConfig { min_frames, max_frames, sample_fps, .. })` returns `Arc<VideoClip>`; bytes are Blake3-hashed (`hasher.rs`) for dedup.
+- `PreprocessedEncoderInputs` geometry accessors (`channels`, `height`, `width`) error on anything but 4D/5D input; `batch_size` and `total_feature_tokens` always work.

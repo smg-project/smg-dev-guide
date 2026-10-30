@@ -42,13 +42,11 @@ if root="$(smg_root "$cwd")"; then
       anchors="$(python3 "$guide/scripts/check_anchors.py" --smg "$root" --guide "$guide" --paths-only --summary --no-fail 2>/dev/null)"
     fi
   fi
-  msg="SMG checkout detected at $root (v${ver:-?}, HEAD ${head:-?}, branch ${branch:-?}). $drift"
-  [ -n "$anchors" ] && msg="$msg Quick check of the paths the guide cites: $anchors. If a skill points at a path or symbol that is gone, use /smg:learn to record it rather than guessing."
-  msg="$msg
-Skills: /smg:map (orient: live crate map + invariants), /smg:implement (build with a subsystem recipe), /smg:review-pr (checklist review), /smg:contribute (run the pre-PR gate: scripts/gate.sh), /smg:learn (record a guide gap), /smg:sync (resync the guide; maintainers).
-Guard rails this plugin enforces here with a PreToolUse hook, because SMG's CI rejects them later: every commit needs a DCO sign-off (git commit -s); no Co-authored-by/Signed-off-by line may name Claude or anthropic.com; no --no-verify; no commits on main; a pushed branch must match <type>/<desc> or <username>/<desc>."
+  msg="SMG checkout at $root (v${ver:-?}, HEAD ${head:-?}, branch ${branch:-?}). $drift"
+  [ -n "$anchors" ] && msg="$msg Guide paths check: $anchors."
+  msg="$msg Skills: /smg:map, /smg:implement (recipes), /smg:craft (house style), /smg:review-pr, /smg:contribute (gate.sh), /smg:learn when the guide is wrong. The PreToolUse hook enforces SMG's commit rules (DCO, no AI trailers, branch names) and says why when it blocks."
   emit "$msg"
 elif groot="$(guide_repo_root "$cwd")"; then
-  emit "smg-dev-guide checkout detected at $groot: this repository IS the smg plugin (skills/, recipes, hooks, scripts). Useful here: python3 scripts/check_anchors.py --smg <smg checkout> (drift against SMG), python3 scripts/lint_guide.py (self-consistency), bash scripts/upstream_digest.sh --smg <smg checkout> (what changed upstream), /smg:sync (full resync). The same commit rules as SMG apply and are enforced by the PreToolUse hook: DCO sign-off, no AI attribution lines, branch names setup/feat/fix/docs/chore/refactor/<desc>."
+  emit "smg-dev-guide checkout at $groot: this repository is the smg plugin. Checks: python3 scripts/lint_guide.py; python3 scripts/check_anchors.py --smg <smg>; python3 scripts/check_coverage.py --smg <smg>; python3 scripts/render.py after editing data/. Resync: /smg:sync. Commit rules (DCO, no AI trailers, branch names) are enforced by the PreToolUse hook."
 fi
 exit 0

@@ -1,0 +1,5 @@
+//! The gateway's configuration: `types` (what an operator can set, serde-friendly), `builder` (the
+//! hand-written `RouterConfigBuilder`; a field has no setter until one is written), `validation`
+//! (`ConfigValidator`, run by `build()` for the CLI and the Python bindings alike) and `bounds`.
+//! Every field is reached by two paths, the CLI in `main.rs` and the Python `Router` in
+//! `bindings/python/src/lib.rs`; a field that only one of them sets is a bug.

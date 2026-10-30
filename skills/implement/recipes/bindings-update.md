@@ -5,131 +5,86 @@ level: anchors
 watch:
   - bindings/python/src/lib.rs
   - bindings/python/src/smg/
+  - bindings/python/tests/
+  - bindings/python/src/servicer.rs
   - bindings/golang/
   - model_gateway/src/config/builder.rs
+exemplars:
+  - 9411f19f   # --admin-port/--admin-host: lib.rs four lists, router_args.py, test_arg_parser.py, test_router_config.py
+  - 3f12f121   # power_of_two load metric: a new enum-valued knob through lib.rs and router_args.py
+  - da9f4d06   # PD prefill admission: also router.py, test_startup_sequence.py and golang/src/policy.rs
 ---
 
-# Updating SMG Language Bindings
+# Update the language bindings
 
-Required whenever config types or public APIs change. The #2 contributor mistake after the config two-path rule. Python is a flat keyword API on `Router`; Go is a cgo FFI bridge plus gRPC.
+Python: `bindings/python/src/lib.rs` is one pyclass `Router` (registered in `#[pymodule] fn smg_rs`, cdylib `smg_rs`) plus the helper pyclasses `PolicyType`, `BackendType`, `HistoryBackendType`, `PyRole`, `PyApiKeyEntry`, `Py*Config`; there is no `__init__`, the constructor is `#[new] fn new(...)` with a flat `#[pyo3(signature = (...))]` of about 215 parameters, and `RouterConfig` is assembled in `to_router_config()` via `RouterConfig::builder()....build()`, never as a struct literal.
+The launcher side is the `RouterArgs` dataclass (`bindings/python/src/smg/router_args.py`) and `Router.from_args` in `router.py`, which calls `_Router(**args_dict)`; `smg/__init__.py` exports only `__version__`, the flat-kwarg class is `smg.smg_rs.Router`.
+A second Python surface, `bindings/python/src/servicer.rs` (pyclasses `VllmGrpcServer`, `TokenSpeedGrpcServer`, `TrtllmGrpcServer`, `SglangGrpcServer`, `init_servicer_tracing`) wrapped by `smg/servicer.py` (`serve_rust`), binds the Rust engine servicers of `crates/engine_servicer`.
+Go: Rust FFI exports live in `bindings/golang/src/*.rs` (`client.rs`, `policy.rs`, `tokenizer.rs`, `preprocessor.rs`, `postprocessor.rs`, `stream.rs`, `grpc_converter.rs`, `tool_parser.rs`, `memory.rs`) as `#[no_mangle] pub unsafe extern "C" fn sgl_*`; `src/lib.rs` only re-exports and wires modules; the cgo bridge is `internal/ffi/*.go` (the files with `import "C"`); `multi_client.go` and `client.go` delegate to `internal/ffi` and `internal/grpc`; module `github.com/lightseek/smg/go-grpc-sdk`.
 
-## Python Bindings (PyO3 + maturin)
+Not this recipe:
+- The gateway side of a config field (`config/types.rs`, `main.rs`, `builder.rs`): @config-plumbing.md. This recipe starts once the Rust field and its builder setter exist.
+- A history backend's Python surface (`HistoryBackendType`, `PyRedisConfig`): @storage-backend.md step 5.
 
-`bindings/python/src/lib.rs` exposes the router as a single pyclass `Router`, alongside enum/config helper pyclasses (`PolicyType`, `BackendType`, `HistoryBackendType`, `PyRole`, `Py*Config`, `PyApiKeyEntry`) — all registered in `#[pymodule] fn smg_rs`. There is no `__init__`: the constructor is a `#[new] fn new(...)` with a flat `#[pyo3(signature = (...))]` of 140+ params (the `fn new` inside `impl Router`'s `#[pymethods]` block). `RouterConfig` is NOT a struct literal — it is assembled in `to_router_config()` via `RouterConfig::builder()....build()`. A new field is threaded through four spots.
+## Inputs
 
-> **Keep `PolicyType` in sync with `PolicyConfig`.** The Python `enum PolicyType` (`bindings/python/src/lib.rs`) must mirror `PolicyConfig` (`model_gateway/src/config/types.rs`) — both currently list the same 10 policies (`Random`, `RoundRobin`, `Passthrough`, `CacheAware`, `PowerOfTwo`, `LeastLoad`, `Bucket`, `Manual`, `ConsistentHashing`, `PrefixHash`). Adding a policy means updating both, the `convert_policy` mapping below, the `policy_map` dict in `router.py`'s `policy_from_str` (an unknown name raises `KeyError`), and the `COMMON_POLICY_CHOICES` / `PREFILL_POLICY_CHOICES` / `ENCODE_POLICY_CHOICES` lists at the top of `router_args.py` (argparse `choices=`).
+| Input | Example | Used in |
+|---|---|---|
+| `<field>` | `admin_port` | the four lists in `lib.rs`, the builder call in `to_router_config`, the `RouterArgs` field, the `--admin-port` flag |
+| builder setter | `admin_port` (plain) / `maybe_redis` (`maybe_*`) | `model_gateway/src/config/builder.rs` (hand-written; 22 `maybe_*` setters) |
+| Go operation | `sgl_client_create` | `bindings/golang/src/client.rs`, `internal/ffi/client.go`, `multi_client.go` |
 
-### Step 1: Add to the `#[new]` signature + store on the pyclass
+## Steps
 
-**File:** `bindings/python/src/lib.rs`
+### 1. Add the parameter to the four Rust lists
 
-1. Add a default to the `#[pyo3(signature = (...))]` list (the `#[new]` block in `impl Router`). APPEND after the last entry before the closing `))]` — new params MUST go last so positional `_Router(...)` callers don't break (see the "Appended last (not inserted mid-list)" comment there). Read the actual tail before editing; the list grows every release.
-2. Add the typed arg to `fn new(...)` (the `Router` constructor) and set it in the returned `Router { ... }`.
-3. Add the field to the `struct Router` pyclass.
+File: `bindings/python/src/lib.rs` — Do: the signature binds `worker_urls, policy, host, port` by position, then `*,` and every other parameter keyword-only in alphabetical order; put `<field> = None` at its alphabetical place in the `#[pyo3(signature = (...))]` list, the `fn new(...)` parameters, the `Router { .. }` literal in `new` and the `struct Router` fields (the comment on `struct Router` states the rule), never at the tail.
+Verify: `cargo check --manifest-path bindings/python/Cargo.toml` → compiles; `cd bindings/python && pytest -q tests/test_router_args_parity.py` → the Rust constructor and `RouterArgs` take the same names.
+Trap: a tail append compiles; it only collides with the next contributor's tail append and breaks the alphabetical reading the comment promises.
 
-```rust
-// signature (append last):  my_field = None,
-// fn new param:             my_field: Option<String>,
-// returned struct:          my_field,
-// struct Router field:      my_field: Option<String>,
-```
+### 2. Thread it through `to_router_config()`
 
-### Step 2: Thread it through `to_router_config()` builder
+File: `bindings/python/src/lib.rs` (`to_router_config`) — Do: add one call to the `config::RouterConfig::builder()` chain, `.maybe_<field>(self.<field>.as_ref())` for an `Option` or sub-config, a plain setter such as `.zmq_engine_count(self.zmq_engine_count)` otherwise; add the setter to `RouterConfigBuilder` first when none exists. For a new enum mirror the `convert_policy` closure (`match` on the variant, `config::ConfigError::InvalidValue` on a bad string).
+Discovery has one source: `service_discovery=True` builds the single `DiscoveryConfig::Kubernetes(KubernetesDiscoveryConfig { .. })` literal, a `discovery` mapping (`Option<Bound<PyAny>>`) goes through `parse_discovery` and `config::deserialize_discovery`, both reach `.maybe_discovery(discovery)`, and `Router::start` derives `service_discovery_config` with `service_discovery::RuntimeDiscoveryConfig::from_config` and `mesh_discovery_config` with `mesh::discovery::MeshDiscoveryConfig::from_discovery` from `router_config.discovery`; there is no second literal to keep in sync.
+Verify: `cargo check --manifest-path bindings/python/Cargo.toml` → compiles.
+Trap: grepping for `RouterConfig {` finds nothing; the only struct literals here are `DiscoveryConfig`, `MetricsConfig`, `RetryConfig` and the like.
 
-**File:** `bindings/python/src/lib.rs` (the `to_router_config` method)
+### 3. Mirror it in `RouterArgs` and the CLI
 
-Add a builder call in the `RouterConfig::builder()...` chain (the `config::RouterConfig::builder()` call near the end of `to_router_config`). `RouterConfigBuilder` (`model_gateway/src/config/builder.rs`) is hand-written — use whichever setter it actually exposes, and add one there first if the field has none:
+File: `bindings/python/src/smg/router_args.py` — Do: add the field with a default at its alphabetical place after the `_: dataclasses.KW_ONLY` marker (never at the tail, never before the frozen positional prefix `worker_urls`, `host`, `port`), and `--<field>` in `RouterArgs.add_cli_args(...)` under the right `add_argument_group`; list-valued flags use `action="extend"` (or `"append"`) so repeats accumulate like the Rust CLI. The argparse dest must equal the field name, which `from_cli_args` copies by name. A `RouterArgs` field that is not a `#[new]` parameter is popped in `from_args`'s `fields_to_remove` list (as the `oracle_*`/`postgres_*`/`redis_*`/`jwt_*` fields are) or `_Router(**args_dict)` raises `TypeError`.
+Verify: `cd bindings/python && pytest -q tests/test_arg_parser.py tests/test_cli_parity.py` → `TestRouterArgsFieldOrder` (`test_the_positional_prefix_is_frozen`, `test_every_other_field_is_keyword_only`, `test_the_keyword_only_fields_are_in_alphabetical_order`) passes and the flag matches `struct CliArgs` in `main.rs`.
+Trap: skipping `router_args.py` compiles and the CLI/serve path never passes the parameter; a flag spelled differently from the Rust CLI passes locally and fails `test_cli_parity.py`.
 
-```rust
-.maybe_my_field(self.my_field.as_ref())   // maybe_* setter (Option<String> / sub-config fields)
-.zmq_engine_count(self.zmq_engine_count)  // plain setter that takes the Option directly
-```
+### 4. Update the tests the exemplars touch
 
-If it belongs to discovery, add it to BOTH the `Some(DiscoveryConfig { .. })` literal in `to_router_config` AND the `Some(service_discovery::ServiceDiscoveryConfig { .. })` literal in `Router::start` (passed as `server::ServerConfig.service_discovery_config`) — different types, and a field added to only the first never reaches the k8s watcher. For a new enum, mirror the `convert_policy` closure (the `let convert_policy = |policy: &PolicyType| -> ...` closure in `to_router_config`): `match` on the variant, return `config::ConfigError::InvalidValue` on a bad string.
+File: `bindings/python/tests/` — Do: extend `test_router_config.py` (validation of `RouterArgs` combinations) and `test_startup_sequence.py` (launch flow) for the new field; `test_helm_chart_args.py` renders the chart's `smg.routerArgs` and requires every emitted flag to be an exact `RouterArgs` option (needs `helm`, skipped without it); `test_cli_parity.py` keeps exception lists that fail when an entry no longer holds.
+Verify: `cd bindings/python && pytest -q tests` → the CI gate passes.
 
-**Anti-pattern:** grepping for `RouterConfig {` — there is no such literal. The only struct literals here are `DiscoveryConfig`, `MetricsConfig`, `RetryConfig`, etc.
+### 5. Build and smoke-test
 
-### Step 3: Mirror in the Python arg surface
+File: `Makefile` — Do: `make python-dev` (maturin develop in `bindings/python`), then `python -c "from smg.smg_rs import Router; Router(worker_urls=['http://127.0.0.1:8000'], <field>=...)"`.
+Verify: import and construction succeed.
+Trap: `from smg import Router` imports nothing useful; `smg.router.Router` only wraps a prebuilt handle (`from_args`).
 
-**File:** `bindings/python/src/smg/router_args.py`
+### 6. Go: FFI export, cgo bridge, wrapper
 
-`RouterArgs` (the `@dataclasses.dataclass class RouterArgs` in `router_args.py`) is a dataclass; `router.py`'s `Router.from_args` calls `_Router(**args_dict)`. A param missing here is never passed. Conversely, a `RouterArgs` field that is NOT a `#[new]` param must be popped in `from_args`'s `fields_to_remove` list (as the `oracle_*`/`postgres_*`/`redis_*`/`jwt_*` fields are) or `_Router(**args_dict)` raises `TypeError`.
+File: `bindings/golang/src/client.rs` (or the matching `src/*.rs`) — Do: add `#[no_mangle] pub unsafe extern "C" fn sgl_<op>(handle: *mut SglangClientHandle, arg: *const c_char, error_out: *mut *mut c_char) -> SglErrorCode` with the null-check, `CStr::from_ptr(...).to_str()` and `set_error_message` contract of `sgl_client_create`; re-export it from `src/lib.rs` (`pub use client::sgl_<op>;`). In `internal/ffi/client.go` declare the C signature in the `/* ... */` cgo header, call `C.sgl_<op>`, and on `ErrorCode(result) != ErrorSuccess` read the message and free it with `C.sgl_free_string`. Surface it from `multi_client.go` through `c.ffiClient`, not with raw `C.` calls.
+Verify: `cargo check --manifest-path bindings/golang/Cargo.toml` (the `default-build` lint leg of `scripts/ci_rust_tests.sh`) and `cd bindings/golang && make test` (`cargo build --release`, then `go test ./...`).
+Trap: bare `go test ./...` cannot link: `internal/ffi` declares `#cgo LDFLAGS: -lsmg_go -ldl` with no `-L`; `make test` builds the `libsmg_go` cdylib and exports `CGO_LDFLAGS` plus `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` first.
 
-1. Add the dataclass field (with default) as a **keyword-only** field at its **alphabetical** place in `RouterArgs` — after the `_: dataclasses.KW_ONLY` marker, never at the tail and never before the frozen positional prefix `worker_urls`, `host`, `port`. `bindings/python/tests/test_arg_parser.py` pins all three rules (`test_the_positional_prefix_is_frozen`, `test_every_other_field_is_keyword_only`, `test_the_keyword_only_fields_are_in_alphabetical_order`), so a tail append fails CI; the alphabetical rule also keeps two concurrent additions off the same lines.
-2. Add the matching `--my-field` in `RouterArgs.add_cli_args(...)` under the right `add_argument_group`. List-valued flags use `action="extend"` (or `"append"`) so repeated occurrences accumulate like the Rust CLI.
+### 7. Servicer bindings
 
-**Verify:** field name matches the `#[new]` param exactly (underscores) — `from_cli_args` copies values by dataclass field name, so the argparse dest must equal the field name.
+File: `bindings/python/src/servicer.rs` — Do: a servicer-side setting (a worker label such as `constrained_decoding`, an engine fact) goes into the `#[new]` signature of each affected pyclass (`PyTokenSpeedGrpcServer` and its peers) and into `smg/servicer.py`; the shared servicer-args block lives in `crates/engine_servicer`.
+Verify: `cd bindings/python && pytest -q tests/test_servicer_args.py` → the three constructors take the same parameter names and defaults.
 
-### Step 4: Build and smoke-test
+### 8. Gate
 
-```bash
-make python-dev   # Makefile -> maturin develop in bindings/python
-python -c "from smg.smg_rs import Router; Router(worker_urls=['http://127.0.0.1:8000'], my_field='x')"
-cd bindings/python && pytest -q tests   # CI gate (field-order + argparse tests)
-```
+Run `smg:contribute`.
 
-**Verify:** build succeeds AND import + construction work. The flat-kwarg class is the native `smg.smg_rs.Router` — `smg/__init__.py` exports only `__version__`, and `smg.router.Router` merely wraps a prebuilt handle (`from_args`).
+## Rules
 
-## Go SDK (cgo FFI + gRPC)
-
-Two layers. Rust FFI exports live in `bindings/golang/src/*.rs` (client.rs, policy.rs, tokenizer.rs, preprocessor.rs, postprocessor.rs, stream.rs, grpc_converter.rs, tool_parser.rs, memory.rs) as `#[no_mangle] pub unsafe extern "C" fn sgl_*`. `src/lib.rs` only re-exports + wires modules (its `pub use` / `mod` block). The Go cgo bridge lives in `internal/ffi/*.go` (those `import "C"`); top-level wrappers (`multi_client.go`, `client.go`) do NOT import C — they delegate to `internal/ffi` and `internal/grpc`. Module path: `github.com/lightseek/smg/go-grpc-sdk`.
-
-`policy.rs` also carries its own `impl Worker for GrpcWorker` plus a `WorkerMetadata { .. }` literal: any change to the `Worker` trait or to `WorkerMetadata` in `model_gateway/src/worker/` must be mirrored there. `bindings/golang` is a root workspace member, so `cargo check --manifest-path bindings/golang/Cargo.toml` (a CI gate) fails until it is.
-
-### Step 1: Add the Rust FFI export
-
-**File:** the relevant `bindings/golang/src/*.rs` (e.g. `client.rs` for client ops)
-
-```rust
-#[no_mangle]
-pub unsafe extern "C" fn sgl_my_function(
-    handle: *mut SglangClientHandle,
-    arg: *const c_char,
-    error_out: *mut *mut c_char,
-) -> SglErrorCode {
-    // null-check, CStr::from_ptr(...).to_str(), set_error_message on failure
-}
-```
-
-Re-export it from `src/lib.rs` (in the `pub use` block): `pub use client::sgl_my_function;`. Follow `sgl_client_create` (in `src/client.rs`) for the null-check + error-out contract.
-
-### Step 2: Add the cgo bridge + high-level wrapper
-
-**File:** `bindings/golang/internal/ffi/<file>.go` (e.g. `client.go`)
-
-1. Declare the C signature in the `/* ... */` cgo header block, then call it.
-
-```go
-result := C.sgl_my_function(h.handle, cArg, &errorPtr)
-if ErrorCode(result) != ErrorSuccess { /* GoString(errorPtr); C.sgl_free_string(errorPtr) */ }
-```
-
-2. Surface it from the top-level wrapper that already imports `internal/ffi` (e.g. `multi_client.go`, which imports `github.com/lightseek/smg/go-grpc-sdk/internal/ffi`), NOT raw `C.` calls in top-level code.
-
-```go
-func (c *MultiClient) MyFunction(arg string) error { return c.ffiClient.MyFunction(arg) }
-```
-
-### Step 3: Test
-
-```bash
-cargo check --manifest-path bindings/golang/Cargo.toml  # CI gate for the Rust side (from repo root)
-cd bindings/golang && make test                         # cargo build --release, then go test ./...
-```
-
-Bare `go test ./...` cannot link: `internal/ffi` declares `#cgo LDFLAGS: -lsmg_go -ldl` with no `-L`, and the `make test` target builds the `libsmg_go` cdylib and exports `CGO_LDFLAGS` + `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` first.
-
-## Common Mistakes
-
-| Mistake | Consequence |
-|---------|-------------|
-| Looking for a `RouterConfig {` literal | None exists — it's `builder()...build()` in `to_router_config()` |
-| Inserting a `#[new]` param mid-list | Breaks positional `_Router(...)` callers |
-| Inserting a `RouterArgs` field mid-list | `TestRouterArgsFieldOrder` fails in CI |
-| Skipping `router_args.py` | CLI/serve path never passes the new param |
-| `from smg import Router` | `smg/__init__.py` exports only `__version__` — the flat-kwarg class is `smg.smg_rs.Router` |
-| Discovery field added to only one literal | k8s watcher never sees it — `Router::start` builds a second config |
-| Putting `extern "C" fn` in golang `src/lib.rs` | Wrong file — exports live in `src/*.rs`, lib.rs only re-exports |
-| `C.sgl_*` in top-level Go wrapper | No `import "C"` there — bridge belongs in `internal/ffi` |
-| Bare `go test ./...` | Link failure — use `make test`, which builds the cdylib and sets the paths |
-| Go/Rust FFI type mismatch | Segfault or data corruption |
+- `PolicyType` (`lib.rs`) mirrors `PolicyConfig` (`model_gateway/src/config/types.rs`); both list the same 10 policies (`Random`, `RoundRobin`, `Passthrough`, `CacheAware`, `PowerOfTwo`, `LeastLoad`, `Bucket`, `Manual`, `ConsistentHashing`, `PrefixHash`). A new policy edits both, `convert_policy`, the `policy_map` dict in `router.py`'s `policy_from_str` (an unknown name raises `KeyError`), and `COMMON_POLICY_CHOICES`/`PREFILL_POLICY_CHOICES`/`ENCODE_POLICY_CHOICES` at the top of `router_args.py`.
+- `bindings/golang/src/policy.rs` carries its own `impl Worker for GrpcWorker` and a `WorkerMetadata { .. }` literal: a change to the `Worker` trait or `WorkerMetadata` in `model_gateway/src/worker/` is mirrored there, or the `cargo check` of step 6 fails (`bindings/golang` is a root workspace member).
+- No `extern "C" fn` in golang `src/lib.rs` (exports live in `src/*.rs`); no `C.sgl_*` outside `internal/ffi` (top-level wrappers have no `import "C"`).
+- A Go/Rust FFI type mismatch is a segfault or silent data corruption, not a compile error.
+- The Python wheel's two surfaces compile in one crate (`smg-python`): `lib.rs` registers `servicer.rs`'s classes in the same `#[pymodule]`.

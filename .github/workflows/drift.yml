@@ -1,8 +1,9 @@
 name: Drift against SMG HEAD
 
 # The guide's early-warning system. Every day it checks the skills against the
-# current SMG main: which cited paths and symbols are gone, how far HEAD is
-# from the verified commit, which recipes' watched paths churned. It keeps one
+# current SMG main: which cited paths and symbols are gone, which areas recent
+# commits touch that a recipe never mentions, how far HEAD is from the verified
+# commit, which recipes' watched paths churned. It keeps one
 # open issue ("Guide drift report") up to date, so maintainers see drift
 # before an agent walks into a stale recipe. Set the repository variable
 # SMG_GUIDE_AUTOSYNC=true (and the ANTHROPIC_API_KEY secret) to let Claude Code
@@ -47,6 +48,7 @@ jobs:
           broken=$(jq '.broken | length' anchors.json)
           behind=$(git -C smg rev-list --count "$pin..HEAD" 2>/dev/null || echo "unknown")
           bash scripts/upstream_digest.sh --smg smg --since "$pin" > digest.md 2>&1 || true
+          python3 scripts/check_coverage.py --smg smg --format markdown > coverage.md 2>&1 || true
           {
             echo "# Guide drift report"
             echo
@@ -55,6 +57,8 @@ jobs:
             echo "- Run \`/smg:sync\` in a session with both checkouts to resync (see skills/sync/SKILL.md)."
             echo
             cat anchors.md
+            echo
+            cat coverage.md
             echo
             cat digest.md
           } > report.md

@@ -6,92 +6,86 @@ watch:
   - model_gateway/src/observability/
   - model_gateway/src/middleware/metrics.rs
   - model_gateway/src/middleware/logging.rs
+  - crates/external_router/src/metrics.rs
+  - model_gateway/tests/security/control_plane_roles_test.rs
+  - model_gateway/src/server/posture.rs
+exemplars:
+  - 1f3ac2b3   # TTFT/TPOT histograms with their own Matcher::Full bucket edges, render-on-scrape tests
+  - c3965743   # a per-worker request counter: describe, record in the dispatch stage, worker registry
+  - ce30f50d   # POST /heap_profile: a control-plane route joins WRITE_ROUTES and the posture text
 ---
 
-# Adding Observability Features to SMG
+# Add a metric, span field or log line
 
-Three pillars: Prometheus metrics (90+ described, `smg_`-prefixed except the legacy `router_*` names in `crates/mesh/src/metrics.rs`), OpenTelemetry tracing, structured logging via `tracing` crate.
+Three pillars: Prometheus metrics (about 160 `describe_*!` calls in `model_gateway/src/observability/metrics.rs`, `smg_`-prefixed except the legacy `router_*` names in `crates/mesh/src/metrics.rs`), OpenTelemetry tracing bridged in `observability/otel_trace.rs`, and structured logging through the `tracing` crate.
+Label constants and the bounded interners live in `crates/external_router/src/metrics.rs` (`metrics_labels`, `intern_model_label`, `intern_tool_label`, `bool_to_static_str`); `Metrics::` methods in `observability/metrics.rs` are the recording surface.
 
-## Adding Metrics
+Not this recipe:
+- Admission and rate-limit counters already exist (`record_http_rate_limit`, `record_admission_*`): @rate-limit-feature.md.
 
-### Step 1: Describe in `init_metrics()`
+## Inputs
 
-**File:** `model_gateway/src/observability/metrics.rs::init_metrics` (called by `start_prometheus`; it also calls `runtime_metrics::describe`, `smg_mesh::init_mesh_metrics`, `middleware/scheduler/metrics.rs::describe` and `metrics.rs::allocator_stats::describe`).
+| Input | Example | Used in |
+|---|---|---|
+| metric name | `smg_<stage>_duration_seconds` | `init_metrics`, `histogram_bucket_overrides`, the hot path |
+| label source | server-controlled (worker URL) or client-controlled (model id) | `intern_string` vs `Metrics::interned_model_label` |
+| route | `POST /heap_profile` | `READ_ROUTES`/`WRITE_ROUTES`, `server/posture.rs` |
 
-```rust
-describe_counter!("smg_my_metric_total", "Description of what this counts");
-describe_histogram!("smg_my_stage_duration_seconds", "Description of what this measures");
-```
+## Steps
 
-`start_prometheus` attaches histogram buckets **by name**: `Matcher::Suffix("duration_seconds")`, `Matcher::Suffix("ttft_seconds")`, `Matcher::Suffix("tpot_seconds")`, plus a `Matcher::Full` for the event-loop canary. Any other histogram name renders as a summary (quantile lines only) unless you add a `Matcher` there — so name duration histograms `_duration_seconds` and record `as_secs_f64()`, never milliseconds.
+### 1. Describe the metric
 
-### Step 2: Record on hot path with the right interner
+File: `model_gateway/src/observability/metrics.rs` — Do: add `describe_counter!("smg_<thing>_total", "...")` or `describe_histogram!("smg_<stage>_duration_seconds", "...")` to `init_metrics()` (`pub(crate)`; it also calls `allocator_stats::describe`, `runtime_metrics::describe`, `history_metrics::describe`, `smg_mesh::init_mesh_metrics` and `scheduler_metrics::describe` from `middleware/scheduler/metrics.rs`). `start_prometheus` calls it last, after `set_global_recorder`.
+Verify: `curl localhost:29000/metrics | grep "# HELP smg_<thing>"` → the help text is present.
+Trap: a `describe_*!` that runs before the recorder is installed is kept by the no-op recorder: `/metrics` shows `# TYPE` with no `# HELP`.
 
-```rust
-use crate::observability::metrics::intern_string;
+### 2. Give a histogram its buckets
 
-// intern_string is for SERVER-controlled labels only (worker URLs, matched
-// route templates, gateway-set error codes). Interned strings are never freed.
-let worker = intern_string(worker_url);
-counter!("smg_my_metric_total", "worker" => worker).increment(1);
-histogram!("smg_my_stage_duration_seconds").record(elapsed.as_secs_f64());
-```
+File: `model_gateway/src/observability/metrics.rs` (`histogram_bucket_overrides`) — Do: the exporter renders a histogram only for a name that matches one of the 15 `Matcher`s and a summary (quantile lines only) for every other name. `Matcher::Suffix` covers `duration_seconds`, `ttft_seconds` and `tpot_seconds` with the request-latency buckets (`--prometheus-duration-buckets` replaces those); `Matcher::Full` covers `TIME_TO_FIRST_TOKEN_SECONDS` (`smg_router_time_to_first_token_seconds`) and `REQUEST_TIME_PER_OUTPUT_TOKEN_SECONDS` with their own edges, `EVENT_LOOP_DELAY_SECONDS`, `smg_cache_aware_match_ratio`, `smg_kv_event_lag_seconds`, `smg_kv_index_lookup_seconds`, `smg_kv_event_apply_seconds`, `smg_worker_retry_backoff_seconds`, `symphony_telemetry::MALFORMED_BYTES`, `smg_mm_processing_seconds`, `smg_mm_media_fetch_seconds`, `smg_mm_media_per_request`. Name a duration `_duration_seconds` and record `as_secs_f64()`, or add a `Matcher::Full` with its own edges.
+Verify: `curl localhost:29000/metrics | grep "smg_<name>_bucket"` → `le` buckets, not `quantile` lines.
+Trap: a histogram ending in `_seconds` but not `duration_seconds` compiles, scrapes, and renders as a summary.
 
-**Client-controlled labels** (request `model` IDs, MCP tool names) must NOT go through `intern_string`. They go through the bounded interner `Metrics::interned_model_label(model_id)` (`observability/metrics.rs`), which caps the distinct values it will ever hold and collapses everything past the cap into an `"other"` sentinel. A metric with a client-controlled label is therefore added as a `Metrics::` method inside `metrics.rs` (pattern: `Metrics::record_router_request`, `Metrics::record_mm_processing`) and labels through the bounded interner; a new client-controlled label kind gets its own bounded interner beside `interned_model_label`, never a bare `counter!(..., "model" => model_id)`.
+### 3. Record on the hot path with the right interner
 
-**Anti-pattern:** `intern_string(&model_id)` or any other raw client input — the interner never evicts, so it is an unbounded memory and Prometheus series leak.
+File: `model_gateway/src/observability/metrics.rs` — Do: `intern_string(worker_url)` (`pub(crate)`, never freed) is for server-controlled values only: worker URLs, matched route templates, gateway-set error codes. A client-controlled label (request `model` ids, MCP tool names) goes through the bounded `Metrics::interned_model_label(model_id)`, which caps the distinct values and collapses the rest into `metrics_labels::MODEL_OTHER` (`"other"`); such a metric is a `Metrics::` method in `metrics.rs` (pattern `Metrics::record_router_request`, `Metrics::record_mm_processing`), and a new client-controlled label kind gets its own bounded interner beside it (`intern_tool_label` is the model). The HTTP layer labels by the matched axum route template (`matched_path_label`/`MatchedPath` in `model_gateway/src/middleware/metrics.rs`, `"other"` when nothing matched). Static values cost nothing: `status_code_to_static_str(200)`, `bool_to_static_str(true)`.
+Verify: `cargo test -p smg metrics` → the interner tests pass.
+Trap: `intern_string(&model_id)` or any raw client input is an unbounded memory and series leak; a bare `counter!(..., "model" => model_id)` compiles.
 
-**Anti-pattern:** interning dynamic per-request path segments. The HTTP metrics layer labels by the matched axum route *template* (`matched_path_label` / `MatchedPath` in `model_gateway/src/middleware/metrics.rs`), with an `"other"` fallback when no route matched.
+### 4. Register at zero and test the scrape
 
-Static values for common cases (zero allocation):
-```rust
-status_code_to_static_str(200)  // → Some("200")
-bool_to_static_str(true)        // → "true"
-```
+File: `model_gateway/src/observability/metrics/tests.rs` — Do: a family that must be visible before its first event is initialised to zero in `init_startup_series` (`metrics.rs`; `tests/metrics_eager_registration_test.rs` scrapes it through `start_metrics_server`), a per-table one in `regular/symphony/telemetry.rs::init_table_series` (called from `create_worker.rs` once the worker is registered; `server.rs` calls that module's `init_startup_series`). Add a render test with `test_support::render_with_recorder` asserting the rendered lines (cf. `encode_path_activity_registers_every_path_and_reason_on_scrape`, `record_engine_load_sets_core_gauges_per_dp_rank`).
+Verify: `cargo test -p smg --test metrics_eager_registration_test` and `cargo test -p smg observability::metrics::tests`.
+Trap: a counter first created on its first event is absent from every earlier scrape, so `rate()` and alerts on it start late.
 
-### Step 3: Verify exposure
+### 5. Record span fields
 
-Metrics exposed via Prometheus `/metrics` endpoint (served on port **29000** by default, set via `--prometheus-port`).
+File: `model_gateway/src/middleware/logging.rs` — Do: fields are declared `Empty` when the span is created (`request_id = Empty`, `trace_id`, `status_code`) and filled with `span.record("field", value)` on `Span::current()`; the codebase uses no `#[instrument]`, and `tracing::Span` has no `set_attribute` (OTel only). Trace context reaches engines through gRPC metadata (@grpc-backend.md). Runtime self-observability: `observability/runtime_metrics.rs::spawn_observer` runs the event-loop canary (10ms sleep loop recording `smg_tokio_event_loop_delay_seconds`, incrementing `smg_tokio_event_loop_stalls_total` past the drift threshold) and a ~1s `RuntimeMetrics` sampler (queue depth, alive tasks, worker count, per-worker busy ratio, parks).
+Verify: `cargo check -p smg` → an undeclared field is a runtime no-op, so check the span macro too.
 
-**Verify:** `curl localhost:29000/metrics | grep smg_my_metric`
+### 6. Log through `tracing`
 
-## Adding Tracing
+File: `model_gateway/src/observability/logging.rs` — Do: `info!(worker_url = %url, model_id = %id, "Worker registered")`, `warn!(error = %e, "Health check failed")`; never `println!`/`eprintln!` (`print_stdout`/`print_stderr` are `warn` in the workspace `Cargo.toml`). Probe routes (`/health`, `/readiness`, `/liveness`) call `health.rs::mark_probe`, which attaches the `ProbeResponse` marker so `ResponseLogger` (`middleware/logging.rs`) logs them at DEBUG. Targets are module paths under the `smg` crate, and a set `RUST_LOG` replaces the workspace filter (`init_logging`/`build_workspace_filter`), so include a base level: `RUST_LOG=info,smg::policies=debug cargo run -p smg --bin smg -- <args>`; `--bin smg` is required (bins `smg` and `amg`, no `default-run`). Routing decisions log at DEBUG from `policies/registry.rs` ("Sticky routing decision") and `policies/cache_aware.rs::log_tree_decision` ("Cache-aware selection").
+Verify: `cargo clippy -p smg -- -D warnings` → no print lints.
+Trap: a new probe route without `mark_probe` floods ERROR with its 503 once per poll.
 
-The codebase records fields on the current span manually — it does NOT use `#[instrument]`, and `tracing::Span` has no `set_attribute` (that is OTel-only). See `model_gateway/src/middleware/logging.rs`.
+### 7. Register a control-plane route
 
-```rust
-use tracing::Span;
+File: `model_gateway/tests/security/control_plane_roles_test.rs` — Do: a new control-plane route joins `READ_ROUTES` (`user` role reaches it) or `WRITE_ROUTES` (`admin` only), and the posture text in `model_gateway/src/server/posture.rs` (`open_posture_warning`; its test asserts every route string). `POST /heap_profile` (`observability/heap_profile.rs`, handler `dump_heap_profile` in `server.rs`, `tests/heap_profile_test.rs`) is the model.
+Verify: `cargo test -p smg --test security_tests control_plane_roles` → the role matrix covers the route.
+Trap: a route added to `server.rs` alone is served without a role check and no test notices.
 
-let span = Span::current();
-// Fields must be declared (as Empty) when the span is created, then filled in:
-span.record("model_id", req.model_id.as_str());
-span.record("worker_url", url.as_str());
-```
+### 8. Expose
 
-- OTel context is bridged in `model_gateway/src/observability/otel_trace.rs`; trace context propagates through gRPC metadata (see @grpc-backend.md)
-- Runtime self-observability: `observability/runtime_metrics.rs::spawn_observer` runs an event-loop canary (10ms sleep loop, records `smg_tokio_event_loop_delay_seconds`, increments `smg_tokio_event_loop_stalls_total` past the drift threshold) plus a ~1s `RuntimeMetrics` sampler (queue depth, alive tasks, worker count, per-worker busy ratio, parks).
+File: `model_gateway/src/main.rs` — Do: nothing new; `/metrics` is served on `--prometheus-port` (default 29000).
+Verify: `curl localhost:29000/metrics | grep smg_<thing>`.
 
-## Logging Rules
+### 9. Gate
 
-**Use `tracing`, NEVER `println!`/`eprintln!`** (clippy warns).
+Run `smg:contribute`.
 
-```rust
-use tracing::{debug, info, warn, error};
-info!(worker_url = %url, model_id = %id, "Worker registered");
-warn!(error = %e, "Health check failed");
-```
+## Rules
 
-Probe routes (`/health`, `/readiness`, `/liveness`) attach the `ProbeResponse` marker via `health.rs::mark_probe`; `ResponseLogger` (`middleware/logging.rs`) then logs them at DEBUG. Any new probe route must do the same or its 503 ERROR-floods once per poll.
-
-Module-specific levels — targets are module paths under the `smg` crate, and a set `RUST_LOG` replaces the default workspace filter entirely (`observability/logging.rs::init_logging` / `build_workspace_filter`), so always include a base level:
-```bash
-RUST_LOG=info,smg::policies=debug cargo run -p smg --bin smg -- <args>
-```
-`--bin smg` is required: the package declares two bin targets (`smg`, `amg`) and no `default-run`. Routing decisions log at DEBUG from `policies/registry.rs` ("Sticky routing decision") and `policies/cache_aware.rs::log_tree_decision` ("Cache-aware selection").
-
-## Key Rules
-
-- `intern_string()` for server-controlled label values only; client-controlled ones go through the bounded `Metrics::interned_model_label` (capped, then `"other"`)
-- `tracing` crate only, no `println!`
-- Structured fields on spans, not string interpolation
-- GaugeHistogram for in-flight tracking (see `gauge_histogram.rs`)
+- `intern_string()` for server-controlled label values only; client-controlled ones go through the bounded `Metrics::interned_model_label` (capped, then `"other"`).
+- `tracing` crate only, no `println!`; structured fields on spans and events, not string interpolation.
+- In-flight tracking uses `GaugeHistogramVec` (`observability/gauge_histogram.rs`), not a hand-rolled gauge pair.
+- Histograms record seconds (`as_secs_f64()`), never milliseconds.

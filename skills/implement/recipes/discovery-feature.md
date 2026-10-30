@@ -7,109 +7,60 @@ watch:
   - model_gateway/src/workflow/steps/local/create_worker.rs
   - model_gateway/src/workflow/steps/local/discover_metadata.rs
   - model_gateway/tests/discovery/
-  - e2e_test/discovery/
+exemplars: []   # no label-pipeline feature since 2026-08-20; provider additions are in discovery-provider.md
 ---
 
-# Adding a Discovery Feature to SMG
+# Flow new worker metadata through discovery
 
-All worker metadata must flow through the label pipeline. Never add `_override` fields to `WorkerSpec`.
+Providers under `model_gateway/src/service_discovery/` (`kubernetes.rs`, `consul.rs`, `file.rs`, `slurm.rs`) emit `DiscoveredWorker`s (`mod.rs`, with labels and a `fingerprint()`); one reconciler (`reconciler.rs`: `DesiredState::from_workers`, `compute_actions`, `reconcile`) diffs them against the workers it owns (labels `smg.ai/discovery-provider`, `smg.ai/discovery-id`, `smg.ai/discovery-spec-hash`) into `Job::AddWorker` / `Job::RemoveWorker`. Downstream, `DiscoverMetadataStep` probes the backend and `CreateLocalWorkerStep` merges config labels over probe labels, resolves the model id and builds the `ModelCard`. New metadata is a label; nothing else.
 
-## The shape
+Not this recipe: a new provider (@discovery-provider.md); a discovery config knob end to end (@config-plumbing.md).
 
-Service discovery is a set of **providers** behind one shared **reconciler**, all under `model_gateway/src/service_discovery/`:
+## Inputs
 
-| File | Role |
-|---|---|
-| `kubernetes.rs` | pods → workers: `ServiceDiscoveryConfig`, `PodType` (`Encode`, `Prefill`, `Decode`, `Regular`), `PodInfo::from_pod` / `should_include` / `is_healthy`, `compute_desired_state`, `start_service_discovery_with_client`, `ModelIdSource` |
-| `consul.rs` | the healthy instances of one Consul service |
-| `file.rs` | the workers listed in a JSON manifest on disk |
-| `slurm.rs` | a worker on every node of each running Slurm job |
-| `mod.rs` | the provider-neutral vocabulary: `DiscoveredWorker` (what a provider emits — endpoint, type, labels — with a `fingerprint()`), `DiscoveryKind`, `Roles` (which `WorkerType`s a `RoutingMode` admits, and the default type), `endpoint_at` |
-| `reconciler.rs` | `DesiredState::from_workers`, `compute_actions` (diff against the `OwnedWorker`s the reconciler stamped with `smg.ai/discovery-provider`, `smg.ai/discovery-id`, `smg.ai/discovery-spec-hash`), `reconcile` → `Job::AddWorker` / `Job::RemoveWorker` |
-| `snapshot.rs` | last-good snapshots and skip logging when a provider read fails |
-| `runtime.rs` | `RuntimeDiscoveryConfig::from_config` and `start_service_discovery`: which provider the config enables |
-| `provider.rs` | the provider contract the reconciler drives |
-
-Discovery is level-triggered: a reconcile pass over the provider's current view, not per-event handling (there is no `handle_pod_event`). The reconciler only removes workers carrying its own `smg.ai/discovery-*` labels, so it never touches workers registered another way.
-
-## The label pipeline (downstream of discovery)
-
-```
-provider emits DiscoveredWorker { labels, .. }              service_discovery/<provider>.rs
-    ↓ reconcile → Job::AddWorker { spec }                    reconciler.rs, workflow/job_queue.rs
-DiscoverMetadataStep: backend probe → discovered labels     workflow/steps/local/discover_metadata.rs
-    ↓
-CreateLocalWorkerStep: merge config.labels over probe labels (config wins)   steps/local/create_worker.rs
-    ↓ extract special keys (kv_connector, kv_role, kv_engine_id)
-    ↓ resolve_model_id(): config.models.primary() → labels["served_model_name"]
-    ↓                      → labels["model_id"] → labels["model_path"] → UNKNOWN_MODEL_ID
-    build_model_card(model_id, config, &labels, &router_config.model_aliases) → ModelCard
-```
-
-**To inject new metadata:** put it in the `DiscoveredWorker`'s labels. The pipeline handles the rest. `--model-alias alias=canonical` attaches client-facing aliases to discovered cards; `resolve_model_id()` deliberately ignores them. gRPC backend detection (sglang/vllm/trtllm/tokenspeed/mlx) lives in `workflow/steps/local/detect_backend.rs`; an OpenAI-compatible HTTP backend matching no fingerprint registers as `generic`.
+| Input | Example | Used in |
+|---|---|---|
+| source | pod annotation, Consul meta, manifest field | step 2 |
+| label key | `my_key` | steps 2–3 |
+| consumer | `create_worker.rs`, a policy, a router | step 3 |
+| config override | `WorkerSpec.labels` from config wins over the probe | step 3 |
 
 ## Steps
 
-### Step 1: Add the config field
+### 1. Config
 
-Follow @config-plumbing.md for `DiscoveryConfig` (`config/types.rs`), then mirror the field on the runtime struct the provider reads — for K8s `ServiceDiscoveryConfig` in `service_discovery/kubernetes.rs` (plus its `Default` impl; `main.rs::to_server_config` builds it from `router_config.discovery`), for Consul/file/Slurm the provider's own config — and thread it through `RuntimeDiscoveryConfig::from_config` (`service_discovery/runtime.rs`). Use a typed enum, not a `String`.
+File: `model_gateway/src/config/types.rs` — Do: a `DiscoveryConfig` field per @config-plumbing.md, mirrored on the runtime struct the provider reads (`ServiceDiscoveryConfig` in `service_discovery/kubernetes.rs` for K8s, the provider's own config otherwise) and threaded through `RuntimeDiscoveryConfig::from_config` (`service_discovery/runtime.rs`). Typed enum, not `String`.
+Verify: `cargo check -p smg`
+Trap: `main.rs::to_server_config` builds the K8s `ServiceDiscoveryConfig` only; a Consul, file or Slurm knob goes through `RuntimeDiscoveryConfig::from_config`.
 
-**Verify:** `cargo check -p smg`
+### 2. Stamp the label in the provider
 
-### Step 2: Read it in the provider and stamp a label
+File: `model_gateway/src/service_discovery/kubernetes.rs` (or the provider you extend) — Do: read the value in `PodInfo::from_pod(pod, Some(config))` into a `PodInfo` field; in `compute_desired_state()` insert it into the `DiscoveredWorker`'s labels (`labels.insert("my_key".to_string(), value)`). The reconciler needs nothing: `DesiredState::from_workers` and `compute_actions` compare `fingerprint()`s, so a changed label re-registers the worker on the next pass.
+Verify: `cargo test -p smg service_discovery`
+Trap: a provider-specific check in `reconciler.rs` breaks the other providers; the `smg.ai/discovery-` prefix is the reconciler's.
 
-**File:** `model_gateway/src/service_discovery/kubernetes.rs` (or the provider you extend)
+### 3. Consume
 
-1. `PodInfo::from_pod(pod, Some(config))` — read the pod label/annotation into a new `PodInfo` field (it also reads the `smg.ai/worker-ports` multi-port annotation).
-2. `compute_desired_state()` — one `DiscoveredWorker` per pod data port; insert your value into its labels: `labels.insert("my_key".to_string(), value)`.
-3. Nothing in `reconciler.rs`: `DesiredState::from_workers` and `compute_actions` are provider-neutral and compare `fingerprint()`s, so a changed label re-registers the worker on the next pass.
+File: `model_gateway/src/workflow/steps/local/create_worker.rs` — Do: read the merged labels in `CreateLocalWorkerStep` (`labels.get("my_key")`); the `served_model_name` / `model_id` path is the template.
+Verify: `cargo check -p smg`
+Trap: a field on `WorkerSpec` bypasses the pipeline; a `ModelCard` write after `build_model_card()` races with routing.
 
-Use the existing `served_model_name` / `model_id` label path as the template. The `smg.ai/discovery-` prefix is reserved for the reconciler.
+### 4. Bindings
 
-**Verify:** `cargo test -p smg service_discovery`
+@bindings-update.md for the config field.
 
-**Anti-pattern:** a provider-specific check in `reconciler.rs` (it breaks Consul/file/Slurm), a new field on `WorkerSpec`, or a label under the reserved prefix.
+### 5. Tests
 
-### Step 3: Consume it in worker creation (if needed)
+File: `model_gateway/src/service_discovery/kubernetes.rs` `mod tests` — Do: a `test_compute_desired_state_*` case that the label is stamped (multi-port pods, IPv6 brackets, unready and terminating pods excluded are the existing ones). File: `model_gateway/tests/discovery/k8s_discovery_test.rs` — Do: a case through the scripted fake API server (`start_service_discovery_with_client`) asserting the label reaches the model card; config override wins over the probe; missing metadata degrades gracefully.
+Verify: `cargo test -p smg service_discovery && cargo test -p smg --test discovery_tests`; real cluster `SMG_KIND_E2E=1 pytest e2e_test/discovery/kind -m kind`
 
-**File:** `model_gateway/src/workflow/steps/local/create_worker.rs` — read from the merged labels in `CreateLocalWorkerStep`:
+### 6. Gate
 
-```rust
-let my_value = labels.get("my_key");
-```
+Run `smg:contribute`.
 
-**Anti-pattern:** a `WorkerSpec` field (bypasses the pipeline, creates a parallel data path); mutating `ModelCard` after `build_model_card()` (races, stale routing data).
+## Rules
 
-### Step 4: Bindings
-
-Follow @bindings-update.md for the new config field.
-
-### Step 5: Tests
-
-- Unit: `compute_desired_state` stamps the label — copy the `test_compute_desired_state_*` tests in `kubernetes.rs` (multi-port pods, IPv6 brackets, unready and terminating pods excluded, PD prefill bootstrap alignment).
-- Reconciler: `compute_actions` adds, updates and removes on label changes — tests in `reconciler.rs`.
-- Integration: `model_gateway/tests/discovery/k8s_discovery_test.rs` (a scripted fake K8s API server driving the real reconciler, job queue and registry through `start_service_discovery_with_client`; `file_discovery_test.rs` sits beside it): `cargo test -p smg --test discovery_tests`.
-- Config label override wins over the discovered label; missing metadata → graceful default.
-- Real cluster: `SMG_KIND_E2E=1 pytest e2e_test/discovery/kind -m kind` (needs kind and kubectl); the Consul, file and Slurm suites live next to it under `e2e_test/discovery/`; CI runs them from `.github/workflows/e2e-discovery.yml`.
-
-**Verify:** `cargo test -p smg service_discovery && cargo test -p smg --test discovery_tests`
-
-## Pod types and roles
-
-`PodType` (`kubernetes.rs`) has four variants, each selected by a label-selector flag:
-
-| `PodType` | Selector flag | Purpose |
-|---|---|---|
-| `Regular` | `--selector` | standard workers |
-| `Prefill` | `--prefill-selector` | PD disaggregation: prefill |
-| `Decode` | `--decode-selector` | PD disaggregation: decode |
-| `Encode` | `--encode-selector` | EPD disaggregation: encode |
-
-`Roles::of(&RoutingMode)` (`mod.rs`) says which worker types a routing mode admits (`allows`) and its default type (`default_type`), so a Regular-mode gateway rejects prefill pods loudly instead of routing to them. Mesh HA peers are found through the separate `--router-selector`; a router is not a `PodType`.
-
-## Key rules
-
-- Labels in, `ModelCard` out. No parallel fields, no post-hoc card mutation.
-- Provider logic stays in the provider file; the reconciler is shared.
-- Discovery is a reconcile loop: make a change idempotent across passes (the `fingerprint()` decides whether a worker is re-registered).
-- Every provider that shares the reconciler must still work after your change — run the file-discovery test even for a K8s feature.
+- Discovery is level-triggered (a reconcile pass, no per-event handler); make a change idempotent across passes.
+- `PodType` (`kubernetes.rs`): `Regular` (`--selector`), `Prefill`, `Decode`, `Encode`; `Roles::of(&RoutingMode)` (`mod.rs`) says which worker types a mode admits. Mesh peers come from `--router-selector`, not a `PodType`.
+- gRPC backend detection lives in `workflow/steps/local/detect_backend.rs`; an unidentified OpenAI-compatible HTTP backend registers as `generic`.
+- `--model-alias alias=canonical` adds client-facing aliases; `resolve_model_id()` ignores them.

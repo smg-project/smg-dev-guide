@@ -9,141 +9,85 @@ watch:
   - model_gateway/src/server.rs
   - bindings/python/src/lib.rs
   - bindings/python/src/smg/router_args.py
+  - bindings/python/tests/
+exemplars:
+  - 0e08a253   # feat: --max-connections
+  - 9411f19f   # feat: --admin-port / --admin-host
+  - c6db769e   # feat: PD readiness thresholds
+  - 3766d720   # feat: media fetch timeouts (also reaches grpc_servicer)
 ---
 
-# Adding a Config Field to SMG
+# Add a config field or CLI flag
 
-The #1 contributor mistake is wiring only one of two conversion paths. Follow every step.
+`RouterConfig` (`model_gateway/src/config/types.rs`) is assembled through the hand-written `RouterConfigBuilder` (`config/builder.rs`) in `CliArgs::to_router_config` (`main.rs`); `to_server_config` returns a `ServerConfig` literal that carries the whole `RouterConfig` nested. `RouterConfigBuilder::build()` runs `ConfigValidator` (`config/validation.rs`) for the CLI and the Python bindings alike. Python rebuilds the chain in `bindings/python/src/lib.rs` and exposes it in `router_args.py`.
+
+Not this recipe: a provider `RoutingMode` variant (@provider-api.md); a discovery provider's config (@discovery-provider.md); a flag the engine servicer owns (@engine-servicer.md).
+
+## Inputs
+
+| Input | Example | Used in |
+|---|---|---|
+| name and type | `max_connections: Option<u32>` | steps 1–6 |
+| flag group | `ServingArgs` (listener), `WorkerArgs`, `RoutingArgs`, `DiscoveryArgs`, `ModelArgs`, `IntegrationArgs` | step 3 |
+| default and the disabling zero | `None`; `0` disables | steps 1, 3 |
+| invariants | range, cross-field | step 5 |
+| who reads it | `server::startup` (top-level `ServerConfig`) or a module (nested in `RouterConfig`) | step 4 |
+| launcher and chart twins | `--max-connections` in `router_args.py`, Helm value | step 6 |
 
 ## Steps
 
-### Step 1: Add to DiscoveryConfig / RouterConfig
+### 1. Field
 
-**File:** `model_gateway/src/config/types.rs`
+File: `model_gateway/src/config/types.rs` — Do: add `#[serde(default, skip_serializing_if = "Option::is_none")] pub <field>: Option<T>` (a non-`Option` field with a non-zero default takes `#[serde(default = "default_<field>")]` and a `fn default_<field>()` the `Default` impl reuses, cf. `default_job_queue_capacity`); add it to the `Default` impl.
+Verify: `cargo build`
+Trap: without `#[serde(default)]` already-serialized configs stop deserializing; the backward-compat tests in `types.rs` `mod tests` catch it.
 
-```rust
-#[serde(default, skip_serializing_if = "Option::is_none")]
-pub my_field: Option<MyType>,
-```
+### 2. Builder setter
 
-**Verify:** `cargo build`
-**Anti-pattern:** Missing `#[serde(default)]` — already-serialized configs that lack the field stop deserializing (the `serde_json` backward-compat tests in `types.rs` `mod tests` catch it). A non-`Option` field with a non-zero default takes `#[serde(default = "default_my_field")]` plus a `fn default_my_field()` that the `Default` impl reuses (cf. `default_job_queue_capacity`, `default_stream_body_stall_timeout_secs`).
+File: `model_gateway/src/config/builder.rs` — Do: add `pub fn <field>(mut self, v: Option<T>) -> Self` beside the existing setters (cf. `RouterConfigBuilder::health_check_port`; `maybe_api_key` for an `Option<impl Into<String>>`). The builder is hand-written: `.field(..)` does not exist until you write it.
+Verify: `cargo build`
 
-### Step 2: Update Default impl
+### 3. CLI flag
 
-**File:** `model_gateway/src/config/types.rs`
+File: `model_gateway/src/main.rs` — Do: add the `#[arg(long, value_parser = ..., help_heading = "...")]` field to the flattened group it belongs to (`CliArgs` flattens `RoutingArgs`, `WorkerArgs`, `DiscoveryArgs`, `ServingArgs`, `ModelArgs`, `IntegrationArgs`; the value is read as `self.serving.<field>`). Shared value parsers live in `model_gateway/src/cli/value.rs`; a flag-specific one may stay in `main.rs`. A rename keeps the old spelling with `visible_alias` (cf. `--cache-match-threshold`, test `alias_flags_parse_identically_to_canonical`).
+Verify: `cargo build`
+Trap: no `value_parser` → an invalid value is accepted and crashes at runtime instead of parse time.
 
-Add `my_field: None` (or `my_field: default_my_field()`) to the `Default` impl for the struct.
+### 4. Wire both paths
 
-**Verify:** `cargo build`
+File: `model_gateway/src/main.rs` — Do: add `.<field>(self.<group>.<field>)` to the `RouterConfig::builder()` chain in `to_router_config`. A RouterConfig-only field needs nothing in `to_server_config`: it rides nested. A listener-level setting read by `server::startup` off `ServerConfig` (`host`, `port`, `max_connections`, timeouts, …) is a field on `pub struct ServerConfig` (`server.rs`) and is set in all three literals: `main.rs:to_server_config`, `bindings/python/src/lib.rs` (`Router::start`), and the `server.rs` test helper.
+Verify: a `<field>_flows_into_router_config` (or `_both_configs`) test in `main.rs` `mod tests` built on `cli_args_from(&[..])` (cf. `health_check_port_flows_into_both_configs`); `cargo test -p smg flows_into`
+Trap: a `ServerConfig`-level field wired only through the builder compiles and `server::startup` silently reads the default.
 
-### Step 2b: Add a builder setter
+### 5. Validation
 
-**File:** `model_gateway/src/config/builder.rs`
+File: `model_gateway/src/config/validation.rs` — Do: add the check to the matching `ConfigValidator::validate_*` (`validate_server_settings`, `validate_policy`, `validate_discovery`, `validate_compatibility`, …) returning `ConfigError::InvalidValue { field, value, reason }`.
+Verify: `cargo test -p smg validation`
+Trap: an invariant only in the clap `value_parser` is bypassed by Python callers, who reach the builder directly.
 
-`RouterConfigBuilder` is hand-written, not derived — `.my_field(..)` does not exist until you write it. Add a setter beside the existing ones:
+### 6. Python launcher
 
-```rust
-pub fn my_field(mut self, my_field: Option<MyType>) -> Self {
-    self.config.my_field = my_field;
-    self
-}
-```
+File: `bindings/python/src/lib.rs` — Do: append the parameter last in the `#[pyo3(signature = (...))]` of `Router::new` (positional callers keep their binding), store it on the pyclass, add `.<field>(..)` to the builder chain in `to_router_config`. File: `bindings/python/src/smg/router_args.py` — Do: add a keyword-only field at its alphabetical place after the `_: dataclasses.KW_ONLY` marker (never at the tail; the positional prefix `worker_urls`, `host`, `port` is frozen) and one argparse option with the same name, default and second spelling. Full procedure: @bindings-update.md.
+Verify: `make python-dev && cd bindings/python && pytest -q tests` — `tests/test_cli_parity.py` fails on a flag without a launcher option, `tests/test_router_args_parity.py` on a constructor parameter the launcher never sets, `tests/test_arg_parser.py` on field order, `tests/test_helm_chart_args.py` on a chart argument that drifted.
+Trap: a missing builder call in `lib.rs` compiles; Python launches silently run the Rust default.
 
-cf. `RouterConfigBuilder::health_check_port`; for an `Option`-of-string use the `maybe_api_key(Option<impl Into<String>>)` shape. `RouterConfigBuilder::new()` starts from `RouterConfig::default()`, so Step 2's default is the builder's base.
+### 7. Twins outside the gateway
 
-**Verify:** `cargo build`
+File: `deploy/helm/smg/` — Do: expose a chart-facing flag in the chart (pinned by `test_helm_chart_args.py`). File: `grpc_servicer/` and `bindings/python/src/servicer.rs` — Do: when the engine servicer mirrors the flag (timeouts, media limits), add it there too (@engine-servicer.md).
+Verify: `cd bindings/python && pytest -q tests/test_helm_chart_args.py tests/test_servicer_args.py`
 
-### Step 3: Add CLI flag
+### 8. Tests
 
-**File:** `model_gateway/src/main.rs` (`CliArgs` struct)
+File: `model_gateway/src/config/types.rs` `mod tests` — Do: a `serde_json` round-trip with and without the field (cf. `test_health_check_port_serde_roundtrip_and_backward_compat`). File: `model_gateway/tests/` — Do: a `*_startup_test.rs` for a listener-level setting. Update full struct literals of a changed struct: `DiscoveryConfig` is an enum whose `Kubernetes(..)` literal appears in `main.rs:to_router_config` and `bindings/python/src/lib.rs`; `ServerConfig` has the three literals from step 4; `RouterConfig` test literals are `..Default::default()` spreads.
+Verify: `cargo test -p smg`
 
-```rust
-#[arg(long, value_parser = parse_my_type, help_heading = "Worker Configuration")]
-my_field: Option<String>,
-```
+### 9. Gate
 
-`CliArgs` fields are private (no `pub`), and nearly every flag carries `help_heading = "..."` to group `--help` output (cf. `health_check_port`). Renaming an existing flag keeps the old spelling alive via `visible_alias = "old-name"` (cf. `--cache-match-threshold`, test `alias_flags_parse_identically_to_canonical`).
+Run `smg:contribute`.
 
-Shared value parsers live in `model_gateway/src/cli/value.rs` (`cli/mod.rs` splits the command line by concern: `url_port.rs` is read before clap sees the arguments, `value.rs` holds the flag-value parsers, `secrets.rs` the secret-bearing flags); a parser used by one flag can stay in `main.rs`. Add a validation function — return the typed value when the field is typed (cf. `parse_transport_mode -> Result<TransportMode, String>`):
-```rust
-fn parse_my_type(s: &str) -> Result<String, String> {
-    MyType::parse(s).map_err(|e| e.to_string())?;
-    Ok(s.to_string())
-}
-```
+## Rules
 
-**Verify:** `cargo build`
-**Anti-pattern:** No `value_parser` — invalid values accepted, crash at runtime instead of parse time.
-
-### Step 4: Wire BOTH conversion paths (CRITICAL)
-
-**File:** `model_gateway/src/main.rs`
-
-Both are `CliArgs` methods sourcing from `self` — there is no config-file loader for `RouterConfig`.
-
-- `to_router_config(&self, prefill_urls, encode_urls) -> ConfigResult<RouterConfig>` assembles via `RouterConfig::builder()....build()`. Add the Step 2b setter to the chain.
-- `to_server_config(&self, router_config: RouterConfig) -> ConfigResult<ServerConfig>` returns a `ServerConfig { .. }` literal whose `router_config` field carries the whole `RouterConfig`. A RouterConfig-only field needs **nothing** here — it rides along nested.
-
-```rust
-// to_router_config
-let builder = RouterConfig::builder()
-    // ...
-    .my_field(self.my_field);          // cf. .health_check_port(self.health_check_port)
-```
-
-Only a listener/runtime-level setting that `server::startup` (or `main` around it) reads directly off `ServerConfig` (e.g. `config.host`, `config.port`, `config.health_check_port`, `config.runtime_worker_threads`, `config.max_payload_size`, `config.request_timeout_secs`, `config.shutdown_grace_period_secs`, `config.webrtc_bind_addr`, `config.control_plane_auth`) also needs a top-level copy. For those, add the field to `pub struct ServerConfig` in `model_gateway/src/server.rs` and set it in ALL THREE literals — `main.rs:to_server_config`, `bindings/python/src/lib.rs` (`Router::start`), and the `server.rs` test helper `minimal_server_config`:
-
-```rust
-Ok(ServerConfig {                      // main.rs:to_server_config
-    // ...
-    my_field: self.my_field,           // cf. health_check_port: self.health_check_port,
-})
-```
-
-`to_server_config` also derives `ServiceDiscoveryConfig` from `router_config.discovery`: only `model_id_source` merges CLI (`--model-id-from`) over config with `.or_else(...)`; `router_selector` and `router_mesh_port_annotation` are copied straight out with no CLI override.
-
-**Verify:** add `my_field_flows_into_both_configs` to `main.rs` `mod tests` — `cli_args_from(&["--my-field", ..])`, then `to_router_config(vec![], vec![])`, then `to_server_config(router_config)`. Assert `server_config.my_field` for a top-level field (cf. `health_check_port_flows_into_both_configs`) or `server_config.router_config.my_field` for a nested one (cf. `engine_metrics_flows_into_both_configs`).
-**Anti-pattern:** Wiring only the builder for a top-level `ServerConfig` field. `server::startup` reads the `ServerConfig` copy and silently sees the default — no error, just ignored.
-
-### Step 4b: Add config validation (if the field has invariants)
-
-**File:** `model_gateway/src/config/validation.rs`
-
-Add the check to the matching `ConfigValidator::validate_*` (`validate_server_settings`, `validate_policy`, `validate_discovery`, `validate_compatibility`, ...), returning `ConfigError::InvalidValue { field, value, reason }`. This gate runs from `RouterConfigBuilder::build()` for BOTH the CLI and the Python bindings; the Step 3 `value_parser` only guards the CLI.
-
-**Verify:** `cargo test`
-**Anti-pattern:** Range or cross-field invariants enforced only by `value_parser` — Python callers reach the builder directly and bypass clap entirely.
-
-### Step 5: Update Python bindings
-
-**File:** `bindings/python/src/lib.rs`
-
-The `Router` constructor is `#[new]` with a flat `#[pyo3(signature = (...))]`, and `RouterConfig` is assembled via `RouterConfig::builder()` in `to_router_config()` — there is NO `RouterConfig` struct literal. Append `my_field` to the signature, store it on the `Router` pyclass, thread it through the builder chain, and mirror it in `src/smg/router_args.py`. Full procedure: @bindings-update.md.
-
-**Verify:** `make python-dev`, then `cd bindings/python && pytest -q tests` (what CI runs; `make python-test` runs `e2e_test/` instead). Add the new field to `RouterArgs` as a keyword-only field at its alphabetical place (after the `_: dataclasses.KW_ONLY` marker, never at the tail): `bindings/python/tests/test_arg_parser.py` pins the frozen positional prefix (`worker_urls`, `host`, `port`), keyword-only-ness and alphabetical order.
-**Anti-pattern:** Grepping for a `RouterConfig {` literal — none exists; add the field to the `builder()` chain instead. But `ServerConfig {` and `DiscoveryConfig {` literals DO exist in `lib.rs` (`Router::start`, `to_router_config`) as well as in `main.rs`; a field on either of those structs must be added to every literal or the bindings stop compiling.
-
-### Step 6: Go SDK — no change
-
-`bindings/golang/` is a gRPC client SDK plus a tokenizer/parser cdylib; it carries no `RouterConfig`/`ServerConfig` surface. Skip.
-
-### Step 7: Add tests
-
-- Serde backward-compat test in `config/types.rs` `mod tests`: `serde_json` round-trip with and without the field (cf. `test_health_check_port_serde_roundtrip_and_backward_compat`) — not YAML
-- `main.rs` `mod tests`, the established trio per flag: `my_field_flows_into_both_configs`, `my_field_defaults_to_none_in_both_configs`, `my_field_..._rejected_at_parse_time`, all built on `cli_args_from(&[..])`
-- Update full struct literals of the modified type. `RouterConfig` test literals are all `..Default::default()` spreads (nothing to do); `DiscoveryConfig` has a full literal in `types.rs` tests plus production literals in `main.rs:to_router_config` and `lib.rs:to_router_config`; `ServerConfig` has the three from Step 4
-
-**Verify:** `cargo test`
-
-## Common Mistakes
-
-| Mistake | Consequence | Prevention |
-|---------|-------------|------------|
-| Only wiring `to_router_config()` for a `ServerConfig`-level field | `server::startup` reads the default off `ServerConfig` | Add a `*_flows_into_both_configs` test in `main.rs` |
-| Adding `my_field: self.my_field` to the `ServerConfig` literal for a RouterConfig-only field | Does not compile — it rides in `ServerConfig.router_config` | Only top-level `ServerConfig` fields get a literal entry |
-| Calling `.my_field(..)` without writing the setter | Does not compile — no such method on `RouterConfigBuilder` | It is hand-written, not derived: add the setter in `config/builder.rs` first |
-| Missing `#[serde(default)]` | Serialized configs without the field break on deserialize | Every `Option<T>` field needs it |
-| Invariants only in clap `value_parser` | Python bindings bypass clap and accept the bad value | Put the check in `config/validation.rs` |
-| Appending a `RouterArgs` field at the tail, or making it positional | `test_the_keyword_only_fields_are_in_alphabetical_order` / `test_every_other_field_is_keyword_only` fail | Keyword-only, at its alphabetical place after `KW_ONLY` |
-| String instead of typed enum at runtime | Re-parsing on every request | Parse at boundary, store typed |
+- The Go SDK (`bindings/golang/`) carries no `RouterConfig` surface; skip it.
+- Deprecated flags are kept and tested rather than deleted (the `--kv-indexer-*` test in `main.rs`); retire a flag by alias, not by removal.
+- Parse at the boundary, store typed; a `String` re-parsed on every request is a smell.
+- `--help` is grouped by `help_heading`; a flag without one lands in the unsorted tail.

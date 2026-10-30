@@ -1,0 +1,6 @@
+//! The `smg` binary's command line and the two paths from it to a running gateway.
+//!
+//! `CliArgs` flattens the flag groups (`RoutingArgs`, `WorkerArgs`, `DiscoveryArgs`, `ServingArgs`,
+//! `ModelArgs`, `IntegrationArgs`). `to_router_config` builds `RouterConfig` through its hand-written
+//! builder; `to_server_config` builds the `ServerConfig` literal that `server::startup` reads. A
+//! listener-level setting needs both paths; a `RouterConfig` field rides nested in the second.
