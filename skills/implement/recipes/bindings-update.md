@@ -88,3 +88,4 @@ Run `smg:contribute`.
 - No `extern "C" fn` in golang `src/lib.rs` (exports live in `src/*.rs`); no `C.sgl_*` outside `internal/ffi` (top-level wrappers have no `import "C"`).
 - A Go/Rust FFI type mismatch is a segfault or silent data corruption, not a compile error.
 - The Python wheel's two surfaces compile in one crate (`smg-python`): `lib.rs` registers `servicer.rs`'s classes in the same `#[pymodule]`.
+- A flag that changes how the gateway starts carries a case in `model_gateway/tests/` (the `*_startup_test.rs` group); four of the six recent binding exemplars added one.

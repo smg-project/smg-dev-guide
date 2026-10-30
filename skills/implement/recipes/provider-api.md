@@ -59,12 +59,13 @@ Trap: provider code outside its feature breaks the `self-hosted` and `anthropic-
 
 ### B4. Router family: config
 
-File: `model_gateway/src/config/types.rs` — Do: a `RoutingMode` variant (patch `worker_count`, `mode_type`, `validate_mode` / `validate_discovery` in `config/validation.rs`: provider modes are HTTP-only and reject discovery); a `Backend` value in `main.rs` and its `to_router_config` branch; a `ProviderType` variant covered by `serves` (@config-plumbing.md).
-Verify: `cargo check -p smg --features provider-<family>`
+File: `model_gateway/src/config/types.rs` — Do: a `RoutingMode` variant (patch `worker_count`, `mode_type`, `validate_mode` / `validate_discovery` in `config/validation.rs`: provider modes are HTTP-only and reject discovery); a `Backend` value in `main.rs` and its `to_router_config` branch; a `ProviderType` variant covered by `serves` (@config-plumbing.md). The launcher mirrors the backend value: `BackendType` in `bindings/python/src/lib.rs` and the `--backend` choices in `bindings/python/src/smg/router_args.py` (@bindings-update.md).
+Verify: `cargo check -p smg --features provider-<family> && cd bindings/python && pytest -q tests/test_cli_parity.py`
 
 ### B5. Routes
 
 Already mounted: `/v1/messages`, `/v1/interactions`. A protocol SMG does not expose yet is a new endpoint: @http-endpoint.md.
+Verify: `cargo test -p smg routers` (the mounted routes' tests still pass)
 
 ### C. Gate
 

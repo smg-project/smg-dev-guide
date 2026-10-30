@@ -339,6 +339,7 @@ def main() -> int:
     index = Index(smg)
     guide_files = {str(p.relative_to(guide)) for p in guide.rglob("*") if ".git" not in p.parts}
     guide_basenames = {p.name for p in guide.rglob("*") if ".git" not in p.parts and p.is_file()}
+    guide_names = {p.stem for p in (guide / "skills" / "implement" / "recipes").glob("*.md")} | {p.name for p in (guide / "skills").iterdir() if p.is_dir()}
 
     def ignored(a: Anchor) -> bool:
         return any(p.fullmatch(a.value) for p in ignore)
@@ -351,6 +352,9 @@ def main() -> int:
             continue
         if a.kind in ("path", "watch") and (a.value in guide_files or ("/" not in a.value and a.value in guide_basenames)):
             skipped += 1  # a reference to the guide's own files (gate.sh, SKILL.md), not an SMG anchor
+            continue
+        if a.kind == "literal" and a.value in guide_names:
+            skipped += 1  # a recipe or skill name (config-plumbing, review-pr), not an SMG lane
             continue
         checked.append(a)
 

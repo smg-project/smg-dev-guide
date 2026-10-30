@@ -97,3 +97,4 @@ Run `smg:contribute`.
 - Nothing in the crate retries or restarts an engine: `note_engine_alive` resets the handshake's silence bound, failures gate health and surface in `last_error`, and the launcher's supervision loop restarts the pair.
 - `set_serving(false)` is the drain switch (health NOT_SERVING, admission closed, in-flight streams run until `stop`); `set_ready(false)` holds readiness while admitting the launcher's warm-up requests (`smg-warmup-<n>`) alone.
 - Tests bound every wait with `Bounded::bounded()` (`crates/engine_servicer/src/testing.rs`) and put the `ipc://` handshake under the test's own directory, so a stalled servicer fails at the line and parallel tests never share a port.
+- A servicer feature that changes what crosses the wire also lands in `crates/engine_zmq_client/src/protocol/` (@zmq-backend.md, step A1); five of the six recent servicer commits touched both crates.

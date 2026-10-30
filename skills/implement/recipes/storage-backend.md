@@ -61,7 +61,7 @@ Verify: `cargo check -p data-connector` → compiles.
 
 ### 3. Migrations (SQL backends only)
 
-File: `crates/data_connector/src/<backend>_migrations.rs` — Do: key-value backends need none. A SQL backend adds `pub(crate) static <BACKEND>_HISTORY_MIGRATIONS: [Migration; N]` (`versioning::Migration`, cf. `POSTGRES_HISTORY_MIGRATIONS`/`ORACLE_HISTORY_MIGRATIONS`, both at 4 with the v4 tenant column on responses, conversations and conversation items), creates tables at start-up (Postgres: `PostgresStore::bootstrap()` in `postgres.rs` creates them and runs `run_postgres_migrations`; Oracle: per-struct `init_schema(conn, schema)` passed to `OracleStore::new`, then `run_oracle_migrations` in `oracle.rs`), with both runners in `versioning.rs` recording versions in `_schema_versions` (`VERSIONS_TABLE`). A new dialect adds its own runner.
+File: `crates/data_connector/src/<backend>_migrations.rs` — Do: key-value backends need none. A SQL backend adds `pub(crate) static <BACKEND>_HISTORY_MIGRATIONS: [Migration; N]` (`versioning::Migration`, cf. `POSTGRES_HISTORY_MIGRATIONS`/`ORACLE_HISTORY_MIGRATIONS`, both at 4 with the v4 tenant column on responses, conversations and conversation items), creates tables at start-up (Postgres: the factory's `create_postgres_storage` awaits `PostgresStore::bootstrap()` in `postgres.rs`, which creates them and runs `run_postgres_migrations`; Oracle: per-struct `init_schema(conn, schema)` passed to `OracleStore::new`, then `run_oracle_migrations` in `oracle.rs`), with both runners in `versioning.rs` recording versions in `_schema_versions` (`VERSIONS_TABLE`). A new dialect adds its own runner.
 Verify: `cargo test -p data-connector migrations` → the up statements are asserted.
 Trap: a table without the nullable `tenant` column stores every tenant's rows as unscoped; nothing fails until a cross-tenant read.
 
@@ -93,3 +93,4 @@ Run `smg:contribute`.
 - Per-domain error enums; there is no unified `StorageError` type.
 - Every call to a remote store runs under `op_timeout_secs` through `Bounded*Storage`; the gateway answers 503 when the bound is exceeded, so a backend never adds its own timeout layer.
 - `StoredResponse` and `Conversation` carry `tenant`; a record stored under a tenant is served only to that tenant, one stored under none to everyone (`tenant_scope_allows`).
+- Storage behaviour visible through the Conversations and Responses endpoints is pinned by `model_gateway/tests/` (the `api` and `catalogue` groups) and by the persistence helpers in `crates/external_router/src/persistence_utils.rs`; a contract change touches both.

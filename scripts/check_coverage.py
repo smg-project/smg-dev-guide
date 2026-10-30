@@ -78,15 +78,51 @@ def commit_areas(smg: Path, sha: str) -> tuple[set[str], list[str]]:
     return {area_of(f) for f in files}, files
 
 
-def recipe_mentions(text: str) -> set[str]:
+class Resolver:
+    """Normalises the paths a recipe cites: gateway-relative paths (`routers/gateway.rs`,
+    `config/validation.rs`, `main.rs`) are read against `model_gateway/src/`, and a bare file name
+    that exists once in the checkout resolves to that file."""
+
+    def __init__(self, smg: Path):
+        files = [f for f in git(smg, "ls-files").split("\n") if f]
+        self.gateway_dirs = {p.name for p in (smg / "model_gateway" / "src").iterdir() if p.is_dir()}
+        self.gateway_files = {p.name for p in (smg / "model_gateway" / "src").iterdir() if p.is_file()}
+        by_base: dict[str, list[str]] = {}
+        for f in files:
+            by_base.setdefault(f.rsplit("/", 1)[-1], []).append(f)
+        self.unique = {b: ps[0] for b, ps in by_base.items() if len(ps) == 1}
+
+    def normalise(self, p: str) -> str:
+        p = p.rstrip("/")
+        if p.split("/", 1)[0] in TOP_DIRS_SET:
+            return p
+        head = p.split("/", 1)[0]
+        if head in self.gateway_dirs or (head in self.gateway_files and "/" not in p):
+            return "model_gateway/src/" + p
+        if head in ("tests", "benches", "test_harness"):
+            return "model_gateway/" + p          # `tests/http/...` is the gateway's integration-test tree
+        if "/" not in p and p in self.unique:
+            return self.unique[p]
+        return p
+
+
+TOP_DIRS_SET = {"model_gateway", "crates", "bindings", "e2e_test", "clients", "scripts", "grpc_servicer", "deploy", "docker", "examples", ".github"}
+
+
+def recipe_mentions(text: str, resolver: Resolver, watch: list[str] = ()) -> set[str]:
     mentioned: set[str] = set()
+    for w in watch:  # the recipe's declared scope counts as mentioned
+        q = resolver.normalise(w)
+        mentioned.add(area_of(q))
+        mentioned.add(q)
     for span in SPAN.findall(text):
+        span = re.sub(r"<[^<>]+>", "x", span)   # `crates/engine_servicer/src/<engine>/` mentions that crate
         for kind, value in classify(span):
             if kind == "path":
                 for p in expand_braces(value):
-                    mentioned.add(area_of(p.rstrip("/")))
-                    # a directory mention covers everything under it
-                    mentioned.add(p.rstrip("/"))
+                    q = resolver.normalise(p)
+                    mentioned.add(area_of(q))
+                    mentioned.add(q)  # a directory mention covers everything under it
     return mentioned
 
 
@@ -113,11 +149,12 @@ def main() -> int:
     files = [RECIPES / (r if r.endswith(".md") else f"{r}.md") if "/" not in r else Path(r) for r in args.recipes] or sorted(RECIPES.glob("*.md"))
     report = []
     any_gap = False
+    resolver = Resolver(smg)
     for f in files:
         text = f.read_text(encoding="utf-8")
         fm, _ = parse_frontmatter(text.splitlines())
         exemplars = exemplar_commits(smg, fm, args.since, args.max)
-        mentioned = recipe_mentions(text)
+        mentioned = recipe_mentions(text, resolver, [w for w in (fm.get("watch") or []) if isinstance(w, str)])
         counts: dict[str, int] = {}
         details = []
         for sha, subject in exemplars:

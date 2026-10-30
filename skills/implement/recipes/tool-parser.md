@@ -4,239 +4,88 @@ verified: 176ce3ae88f7f857441853c7dc2e087e3277b5c0
 level: anchors
 watch:
   - crates/tool_parser/src/
+exemplars:
+  - 9d639713   # MiniMax-M3: parser, structural tag, src/tests.rs mapping test, chat_template.rs toggle, gateway arming
+  - 81d43443   # DeepSeek-V4.1: a structural-tag constructor on an existing parser plus its tests/ coverage
+  - f22e1067   # Hy4: parser with a streaming.rs sibling, structural tag + reasoning prefix, README row
 ---
 
-# Adding a Tool Parser to SMG
+# Add a legacy tool parser
 
-> **Legacy lane.** At SMG v1.13.0 the gateway's default parser is Symphony (`--parser symphony`, see @symphony-format.md): new model support goes into a Symphony format table, not here. Follow this recipe only for the `--parser legacy` lane, or for a model outside Symphony's registry that must keep a legacy parser name (`--tool-call-parser` / `--reasoning-parser`).
+A parser implements `ToolParser` (`crates/tool_parser/src/traits.rs`; `#[async_trait]`, `Send + Sync`): `parse_complete(&self, text)` returns `(String, Vec<ToolCall>)`, `parse_incremental(&mut self, chunk, tools)` returns `StreamingParseResult { normal_text, calls: Vec<ToolCallItem> }` (`types.rs`).
+It lives in `crates/tool_parser/src/parsers/<name>.rs`; `ParserFactory::new()` (`crates/tool_parser/src/factory.rs`) registers it by key and maps model IDs to it.
+The gateway creates parsers through the factory and pools them behind `Arc<Mutex<..>>` (`get_pooled_parser`), so no `Rc` / `RefCell` / non-`Send` fields.
+This recipe is the common "JSON wrapped in tags" shape; check the table at the end before writing a file.
 
-Implement the `ToolParser` trait, register it in the factory, map model IDs to it. For the common "JSON wrapped in tags" case, delegate streaming to `helpers::handle_json_tool_streaming` and model your code on `parsers/mistral.rs` / `parsers/qwen.rs`. There is NO `extract_tool_calls_from_value` helper — build `ToolCall { function: FunctionCall { name, arguments } }` yourself.
+Not this recipe:
+- Legacy lane only. At v1.13.0 the default parser is Symphony (`--parser symphony`, @symphony-format.md): new model support goes into a Symphony format table. Follow this recipe for `--parser legacy`, or for a model outside Symphony's registry that must keep a legacy name (`--tool-call-parser` / `--reasoning-parser`).
+- A format in the table at the end: reuse or alias the parser named there.
 
-First find the format: check vLLM (`vllm/tool_parsers`) or SGLang (`python/sglang/srt/function_call`) for the model family, or its HF `tokenizer_config.json` `chat_template`. Then copy the closest existing SMG parser's shape.
+## Inputs
+
+| Input | Example | Used in |
+|---|---|---|
+| Key | `<name>` (factory key; `--tool-call-parser <name>`) | steps 2-6 |
+| Markers | `<tool_call>` / `</tool_call>`; confirm against vLLM (`vllm/tool_parsers`), SGLang (`python/sglang/srt/function_call`) or the HF `tokenizer_config.json` `chat_template` | step 1 |
+| Model stems | `<family>-*` (case-insensitive substring of the model ID; longest stem wins) | step 3 |
+| Thinking toggle | the template kwarg (`enable_thinking`, `thinking`, `thinking_mode`, `reasoning_effort`), if the model thinks | step 5 |
 
 ## Steps
 
-### Step 1: Create the parser
+### 1. Write the parser
 
-**File:** `crates/tool_parser/src/parsers/<name>.rs` (e.g. `acme.rs` → `AcmeParser`)
+File: `crates/tool_parser/src/parsers/<name>.rs` — Do: copy the struct fields and the `parse_incremental` body of `parsers/mistral.rs` / `parsers/qwen.rs` verbatim (`PartialJson`, `buffer`, `prev_tool_call_arr`, `current_tool_id`, `current_tool_name_sent`, `streamed_args_for_tool`); only the marker constants and the `parse_complete` extraction change per model. Streaming: with no marker and no partial marker (`helpers::ends_with_partial_token`) flush the buffer as normal text, otherwise hand the text after the start marker to `helpers::handle_json_tool_streaming` with `helpers::get_tool_indices`. `get_unstreamed_tool_args` returns `helpers::get_unstreamed_args(&self.prev_tool_call_arr, &self.streamed_args_for_tool)`; `reset` calls `helpers::reset_parser_state`.
+Verify: `cargo check -p tool-parser`
+Trap: there is no `extract_tool_calls_from_value` helper (the build fails); build `ToolCall { function: FunctionCall { name, arguments } }` yourself as `mistral.rs::parse_single_object` does, with `arguments` as a JSON string.
 
-The struct fields and `parse_incremental` body are the shared streaming pattern (identical in `mistral.rs`/`qwen.rs`) — keep them verbatim; only the tokens and `parse_complete` extraction change per model.
+### 2. Export it
 
-```rust
-use async_trait::async_trait;
-use openai_protocol::common::Tool;
-use serde_json::Value;
+File: `crates/tool_parser/src/parsers/mod.rs` — Do: add `pub mod <name>;` and `pub use <name>::<Name>Parser;`. File: `crates/tool_parser/src/lib.rs` — Do: add `<Name>Parser` to the `pub use parsers::{ ... }` block (tests import `tool_parser::<Name>Parser`).
+Verify: `cargo check -p tool-parser`
 
-use crate::{
-    errors::{ParserError, ParserResult},
-    parsers::helpers,
-    partial_json::PartialJson,
-    traits::ToolParser,
-    types::{FunctionCall, StreamingParseResult, ToolCall},
-};
+### 3. Register and map models
 
-const START_TOKEN: &str = "<tool_call>";
-const END_TOKEN: &str = "</tool_call>";
+File: `crates/tool_parser/src/factory.rs` — Do: import the type; in `ParserFactory::new()` call `registry.register_parser("<name>", || Box::new(<Name>Parser::new()))`, or `register_parser_with_structural_tag(name, ctor, <Name>Parser::build_structural_tag)` when the engine can constrain the format (eight do at HEAD: `mistral`, `deepseek_v41`, `glm47_moe`, `kimik2`, `kimi_k3`, `inkling`, `minimax_m3`, `hy_v4`; add `register_reasoning_prefix` when the model thinks before the call, as `glm47_moe` / `minimax_m3` / `hy_v4` do). In `register_default_mappings` add `registry.map_model("<family>-*", "<name>")` once: `resolve_model_to_parser` tries an exact match, then the pattern's stem (trailing `*` stripped) as a case-insensitive substring of the model ID, longest stem wins — `acme-*` already covers `Acme/Acme-7B` and `org/acme-7b`. Pick a stem that cannot occur inside another family's ID (`nemotron-3*`, not `nemotron*`); unmatched models fall back to `passthrough`. Pin the mapping in `crates/tool_parser/src/tests.rs` (9d639713: `test_minimax_m3_model_mappings` asserts `resolve_model_to_parser` for four spellings).
+Verify: `cargo test -p tool-parser --lib`
 
-pub struct AcmeParser {
-    partial_json: PartialJson,
-    buffer: String,
-    prev_tool_call_arr: Vec<Value>,
-    current_tool_id: i32,
-    current_tool_name_sent: bool,
-    streamed_args_for_tool: Vec<String>,
-}
+### 4. Write the integration tests
 
-impl AcmeParser {
-    pub fn new() -> Self {
-        Self {
-            partial_json: PartialJson::default(),
-            buffer: String::new(),
-            prev_tool_call_arr: Vec::new(),
-            current_tool_id: -1,
-            current_tool_name_sent: false,
-            streamed_args_for_tool: Vec::new(),
-        }
-    }
-}
+File: `crates/tool_parser/tests/models/tool_parser_<name>.rs` — Do: declare it with `mod tool_parser_<name>;` in `crates/tool_parser/tests/models/mod.rs` (the binary is `crates/tool_parser/tests/models_tests.rs`; since 1afcd326 there is no per-parser file at the `tests/` root). Import `use crate::common::create_test_tools;` (`crates/tool_parser/tests/common/mod.rs`) and `tool_parser::{<Name>Parser, ToolParser}`. Cover a complete single call, no markers (text unchanged), parallel calls, empty `arguments`, chunked streaming and `reset()` between requests, as `crates/tool_parser/tests/models/tool_parser_mistral.rs` does.
+Verify: `cargo test -p tool-parser --test models_tests tool_parser_<name>`
+Trap: `handle_json_tool_streaming` validates names against the `tools` slice and silently drops unknown ones, so a streaming test with a name absent from `create_test_tools()` (`search`, `get_weather`, ...) emits nothing. Schema-aware parsers (`parsers/minimax_m2.rs`) override `parse_complete_with_tools`, coerce each argument by its declared type (`helpers::coerce_by_schema_type`, `helpers::param_types_for_function`) and forward unknown names; there `tools` supplies types, not an allow-list.
 
-impl Default for AcmeParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+### 5. Arm the gateway
 
-#[async_trait]
-impl ToolParser for AcmeParser {
-    async fn parse_complete(&self, text: &str) -> ParserResult<(String, Vec<ToolCall>)> {
-        let Some(start) = text.find(START_TOKEN) else {
-            return Ok((text.to_string(), vec![]));
-        };
-        let normal_text = text[..start].to_string();
-        let after = &text[start + START_TOKEN.len()..];
-        let json_str = after.split(END_TOKEN).next().unwrap_or(after).trim();
+File: `crates/tokenizer/src/chat_template.rs` — Do: if the model's template exposes a thinking switch `detect_thinking_toggle` does not know, return its `ThinkingToggle` (`DefaultOn` / `DefaultOff`) and `ThinkingKeyName` (`EnableThinking`, `Thinking`, `ThinkingMode`, `ReasoningEffort`; 9d639713 added `thinking_mode`, f22e1067 the `reasoning_effort` on/off words). File: `model_gateway/src/routers/grpc/utils/parsers.rs` — Do: read the kwarg in `extract_thinking_from_kwargs`; `should_mark_reasoning_started` then arms the reasoning parser per request. A structural tag reaches the engine through `tool_constraints_for_worker` → `ParserRegistry::structural_tag_for_grammar_start`; step 3's registration is all it needs.
+Verify: `cargo test -p llm-tokenizer chat_template && cargo test -p smg parsers`
+Trap: a registered parser whose toggle is not detected still compiles; thinking is then never armed and reasoning streams as content.
 
-        // Build ToolCall yourself — no extract_tool_calls_from_value helper exists.
-        let value: Value =
-            serde_json::from_str(json_str).map_err(|e| ParserError::ParsingFailed(e.to_string()))?;
-        let Some(name) = value.get("name").and_then(|v| v.as_str()) else {
-            return Ok((text.to_string(), vec![]));
-        };
-        let empty = Value::Object(serde_json::Map::new());
-        let args = value.get("arguments").unwrap_or(&empty);
-        let arguments =
-            serde_json::to_string(args).map_err(|e| ParserError::ParsingFailed(e.to_string()))?;
-        Ok((normal_text, vec![ToolCall {
-            function: FunctionCall { name: name.to_string(), arguments },
-        }]))
-    }
+### 6. Document
 
-    async fn parse_incremental(
-        &mut self,
-        chunk: &str,
-        tools: &[Tool],
-    ) -> ParserResult<StreamingParseResult> {
-        self.buffer.push_str(chunk);
-        let current_text = self.buffer.clone();
+File: `crates/tool_parser/README.md` — Do: add a row (`Parser | Model Family | Format`) to the parser table, as f22e1067 does for `HyV4Parser`. A push touching `crates/tool_parser/**` also runs the `Benchmark - Tool Parser` workflow (`.github/workflows/benchmark-tool-parser.yml`: `cargo bench --bench tool_parser_benchmark`, `model_gateway/benches/tool_parser_benchmark.rs`); it benchmarks fixed formats and needs no edit for a new parser.
+Verify: `grep <Name>Parser crates/tool_parser/README.md`
 
-        // No marker yet: flush as normal text unless a partial start token is forming.
-        if !self.has_tool_markers(&current_text) {
-            if helpers::ends_with_partial_token(&self.buffer, START_TOKEN).is_none() {
-                let normal_text = std::mem::take(&mut self.buffer);
-                return Ok(StreamingParseResult { normal_text, calls: vec![] });
-            }
-            return Ok(StreamingParseResult::default());
-        }
+### 7. Gate
 
-        let tool_indices = helpers::get_tool_indices(tools);
-        let start_idx = current_text.find(START_TOKEN).map(|p| p + START_TOKEN.len()).unwrap_or(0);
-        helpers::handle_json_tool_streaming(
-            &current_text,
-            start_idx,
-            &mut self.partial_json,
-            &tool_indices,
-            &mut self.buffer,
-            &mut self.current_tool_id,
-            &mut self.current_tool_name_sent,
-            &mut self.streamed_args_for_tool,
-            &mut self.prev_tool_call_arr,
-        )
-    }
+Run `smg:contribute`.
 
-    fn has_tool_markers(&self, text: &str) -> bool {
-        text.contains(START_TOKEN)
-    }
+## Rules
 
-    // Same body in every JSON parser — copy verbatim.
-    fn get_unstreamed_tool_args(&self) -> Option<Vec<crate::types::ToolCallItem>> {
-        helpers::get_unstreamed_args(&self.prev_tool_call_arr, &self.streamed_args_for_tool)
-    }
-    fn reset(&mut self) {
-        helpers::reset_parser_state(
-            &mut self.buffer,
-            &mut self.prev_tool_call_arr,
-            &mut self.current_tool_id,
-            &mut self.current_tool_name_sent,
-            &mut self.streamed_args_for_tool,
-        );
-    }
-}
-```
+- `parse_complete(&self, ...)` is immutable; `parse_incremental(&mut self, ...)` accumulates in `self.buffer`. Reset only between requests, never between chunks: a mid-stream `reset()` loses partial calls.
+- Stream argument deltas, not full arguments each chunk: `handle_json_tool_streaming` tracks `streamed_args_for_tool` and sends the diff; `get_unstreamed_tool_args` (via `helpers::get_unstreamed_args`) recovers what the model emits in its last chunk.
+- Field-name quirks are normalized, not hand-rolled: `helpers::normalize_tool_call_fields` maps Cohere `tool_name` → `name` and `parameters` → `arguments`, already inside `handle_json_tool_streaming`.
+- 26 keys at HEAD: `passthrough`, `json`, `gemma4`, `mistral`, `qwen`, `qwen_xml`, `qwen_coder`, `nemotron`, `pythonic`, `llama`, `deepseek`, `deepseek31`, `deepseek32`, `deepseek_v4`, `deepseek_v41`, `glm45_moe`, `glm47_moe`, `step3`, `sarashina`, `kimik2`, `kimi_k3`, `inkling`, `minimax_m2`, `minimax_m3`, `hy_v4`, `cohere`.
 
-**Verify:** `cargo check -p tool-parser`
-**Anti-pattern:** `helpers::extract_tool_calls_from_value(...)` does not exist — the build fails. Build `ToolCall`/`FunctionCall` directly (see `mistral.rs::parse_single_object`).
+## When not to use the JSON-with-tags shape
 
-### Step 2: Export the parser
-
-**File:** `crates/tool_parser/src/parsers/mod.rs` — add `pub mod acme;` and `pub use acme::AcmeParser;`.
-**File:** `crates/tool_parser/src/lib.rs` — add `AcmeParser` to the `pub use parsers::{ ... }` re-export block (tests import it as `tool_parser::AcmeParser`).
-
-**Verify:** `cargo check -p tool-parser`
-
-### Step 3: Register in the factory + map models
-
-**File:** `crates/tool_parser/src/factory.rs`
-
-Import it in the `use crate::parsers::{ ... }` list, then in `ParserFactory::new()`:
-```rust
-registry.register_parser("acme", || Box::new(AcmeParser::new()));
-```
-And in `register_default_mappings`:
-```rust
-registry.map_model("acme-*", "acme"); // one spelling is enough — matching is case-insensitive
-```
-Model resolution (`resolve_model_to_parser`): exact match first, then the pattern's stem (trailing `*` stripped) is matched as a **case-insensitive substring** of the model ID; the **longest** matching stem wins — length, not order, decides. `acme-*` already covers `Acme/Acme-7B` and `org/acme-7b`, so don't add case or namespace variants. Pick a stem that cannot occur inside another family's ID (`nemotron-3*`, not `nemotron*`). Unmatched models fall back to the `passthrough` default.
-
-**Verify:** `cargo check -p tool-parser`
-
-### Step 4: Write integration tests
-
-**File:** `crates/tool_parser/tests/tool_parser_acme.rs` (model on `tests/tool_parser_mistral.rs`)
-
-```rust
-mod common;
-
-use common::create_test_tools;
-use tool_parser::{AcmeParser, ToolParser};
-
-#[tokio::test]
-async fn test_complete_single() {
-    let parser = AcmeParser::new();
-    let input = r#"hi <tool_call>{"name": "get_weather", "arguments": {"city": "Paris"}}</tool_call>"#;
-    let (normal, tools) = parser.parse_complete(input).await.unwrap();
-    assert_eq!(normal, "hi ");
-    assert_eq!(tools[0].function.name, "get_weather");
-    let args: serde_json::Value = serde_json::from_str(&tools[0].function.arguments).unwrap();
-    assert_eq!(args["city"], "Paris");
-}
-
-#[tokio::test]
-async fn test_streaming() {
-    let mut parser = AcmeParser::new();
-    let tools = create_test_tools(); // valid names: search, get_weather, calculate, ...
-    let chunks = ["<tool_call>{\"na", "me\":\"search\",\"argu", "ments\":{\"query\":\"x\"}}</tool_call>"];
-    let mut calls = Vec::new();
-    for c in chunks {
-        calls.extend(parser.parse_incremental(c, &tools).await.unwrap().calls);
-    }
-    assert!(calls.iter().any(|c| c.name.as_deref() == Some("search")));
-}
-```
-
-Add cases for: no markers (returns text unchanged), multiple/parallel calls, empty `arguments`, and `reset()` between requests — see `tests/tool_parser_mistral.rs`.
-
-**Verify:** `cargo test -p tool-parser --test tool_parser_acme`
-**Anti-pattern:** Tool names absent from `create_test_tools()` — `handle_json_tool_streaming` validates against the `tools` slice and silently drops unknown names, so streaming emits nothing.
-
-> Note: "silently drops unknown names" is specific to this JSON streaming path. Schema-aware parsers like MiniMax-M2 (`parsers/minimax_m2.rs`) override `parse_complete_with_tools`, coerce each argument by its declared schema type (`helpers::coerce_by_schema_type`), and **forward** unknown tool names (still emit a tool_call). `tools` there only supplies types via `helpers::param_types_for_function`, not an allow-list.
-
-### Step 5: Quality gate
-
-Invoke `smg:contribute` to run fmt → clippy → test → bindings → commit.
-
-## Critical Rules
-
-| Rule | Why |
-|---|---|
-| `parse_complete(&self, ...)` is immutable; `parse_incremental(&mut self, ...)` is stateful | Trait signatures in `traits.rs`; streaming accumulates in `self.buffer` etc. |
-| Return type is `(String, Vec<ToolCall>)` for complete, `StreamingParseResult { normal_text, calls: Vec<ToolCallItem> }` for streaming | `types.rs` |
-| Reset only between requests, never between chunks | `reset()` clears buffer/state; mid-stream reset loses partial calls |
-| Stream argument **deltas**, not full args each chunk | `handle_json_tool_streaming` tracks `streamed_args_for_tool` and sends only the diff |
-| Implement `get_unstreamed_tool_args` via `helpers::get_unstreamed_args` | Recovers final args the model emits in the last chunk |
-| No `Rc`/`RefCell`/non-`Send` fields | `ToolParser: Send + Sync`; parsers are pooled behind `Arc<Mutex<…>>` |
-| Field-name quirks: normalize, don't hand-roll | `helpers::normalize_tool_call_fields` maps Cohere `tool_name`→`name`, `parameters`→`arguments` (already called inside `handle_json_tool_streaming`) |
-
-## When NOT to use this JSON-with-tags template
-
-| Format | Example in repo | Approach |
+| Format | In repo | Approach |
 |---|---|---|
-| Pure JSON, no tags (OpenAI/Claude/Gemini) | `parsers/json.rs` (`json`) | Reuse `JsonParser`; just `map_model(... , "json")`, no new file |
-| Pythonic `[func(arg=val)]` (Llama 4) | `parsers/pythonic.rs` (`pythonic`) | Reuse `PythonicParser` |
-| Unicode-delimited blocks (DeepSeek) | `parsers/deepseek.rs`, `deepseek31.rs`, `deepseek_dsml.rs` | Custom token matching |
-| XML with `<parameter>` children (Qwen3-Coder/3.5+, Nemotron-3) | `parsers/qwen_xml.rs` (`QwenXmlParser`, keys `qwen_xml`/`qwen_coder`/`nemotron`) | Custom XML extraction, not `handle_json_tool_streaming` — for a new model with this exact format just `map_model` or alias-register `QwenXmlParser`, no new file |
-| XML `<arg_key>`/`<arg_value>` pairs (GLM-4.5/4.6 → `glm45_moe`, GLM-4.7/5 → `glm47_moe`) | `parsers/glm4_moe.rs` (`Glm4MoeParser::glm45()`/`::glm47()`) | Own parser, not the `<parameter>` format above; the two constructors share a struct and differ only in the func-detail regex |
-| Namespaced/pipe-delimited XML | `minimax_m2.rs` (`<minimax:tool_call>`), `step3.rs` (`steptml:`), `kimik2.rs` (`<\|tool_calls_section_begin\|>…`) | Read the parser for exact framing tokens — they are fragile; don't retype from memory |
-| Channel/marker token streams (Kimi-K3 XTML, Inkling TML) | `kimi_k3.rs` (`<\|open\|>tools<\|sep\|>…<\|open\|>call tool="NAME" index="N"<\|sep\|>`), `inkling.rs` (`<\|message_model\|>NAME<\|content_invoke_tool_json\|>{…}<\|end_message\|>`) | Compiled-`Regex` marker set (Kimi-K3) or a `StreamingState` machine (Inkling); both expose `build_structural_tag` |
-| Python-literal list of dicts `[{'name': …, 'arguments': {…}}]`, optional `<\|tool_calls\|>` prefix | `sarashina.rs` (`sarashina`) | Reuse `pythonic::{parse_python_expression, expression_to_json}`, not `serde_json` — a different grammar from `pythonic.rs`'s `[func(arg=val)]` |
-
-Current parsers (factory keys): `passthrough`, `json`, `mistral`, `qwen`, `qwen_xml`, `qwen_coder`, `nemotron`, `pythonic`, `llama`, `deepseek`, `deepseek31`, `deepseek32`, `deepseek_v4`, `glm45_moe`, `glm47_moe`, `step3`, `sarashina`, `kimik2`, `kimi_k3`, `inkling`, `minimax_m2`, `cohere`. The four that expose a structural tag (`mistral`, `kimik2`, `kimi_k3`, `inkling`) register via `register_parser_with_structural_tag(name, ctor, Parser::build_structural_tag)` instead of `register_parser`.
+| Pure JSON, no tags (OpenAI/Claude/Gemini) | `parsers/json.rs` (`json`) | reuse `JsonParser`: `map_model(..., "json")`, no new file |
+| Pythonic `[func(arg=val)]` (Llama 4) | `parsers/pythonic.rs` (`pythonic`) | reuse `PythonicParser` |
+| Unicode-delimited blocks (DeepSeek) | `parsers/deepseek.rs`, `deepseek31.rs`, `deepseek_dsml.rs` (`DeepSeekDsmlParser::v32()` / `::v4()` / `::v41()`) | custom token matching; a new DSML dialect is another constructor (81d43443) |
+| XML with `<parameter>` children (Qwen3-Coder/3.5+, Nemotron-3) | `parsers/qwen_xml.rs` (`QwenXmlParser`; keys `qwen_xml` / `qwen_coder` / `nemotron`) | `map_model` or alias-register `QwenXmlParser`, no new file |
+| XML `<arg_key>` / `<arg_value>` pairs (GLM-4.5/4.6 → `glm45_moe`, GLM-4.7/5 → `glm47_moe`) | `parsers/glm4_moe.rs` (`Glm4MoeParser::glm45()` / `::glm47()`) | one struct, two constructors differing only in the func-detail regex |
+| Namespaced / pipe-delimited XML | `minimax_m2.rs` (`<minimax:tool_call>`), `minimax_m3.rs`, `step3.rs` (`steptml:`), `kimik2.rs` (`<\|tool_calls_section_begin\|>`) | read the parser for the exact framing tokens; they are fragile, do not retype them from memory |
+| Channel / marker token streams (Kimi-K3 XTML, Inkling TML, Hy4) | `kimi_k3.rs` (`<\|open\|>tools<\|sep\|>…<\|open\|>call tool="NAME" index="N"<\|sep\|>`, compiled `Regex` marker set), `inkling.rs` (`<\|message_model\|>NAME<\|content_invoke_tool_json\|>{…}<\|end_message\|>`, a `StreamingState` machine), `hy_v4.rs` (+ `hy_v4/streaming.rs`) | all expose `build_structural_tag` |
+| Python-literal list of dicts `[{'name': …, 'arguments': {…}}]`, optional `<\|tool_calls\|>` prefix | `sarashina.rs` (`sarashina`) | reuse `pythonic::{parse_python_expression, expression_to_json}`, not `serde_json`: a different grammar from `[func(arg=val)]` |
+- The reasoning twin lands in the same change: `crates/reasoning_parser/src/parsers/<name>.rs` and `crates/reasoning_parser/tests/<name>.rs` (@reasoning-parser.md).

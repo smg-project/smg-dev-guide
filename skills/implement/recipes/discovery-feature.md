@@ -48,6 +48,7 @@ Trap: a field on `WorkerSpec` bypasses the pipeline; a `ModelCard` write after `
 ### 4. Bindings
 
 @bindings-update.md for the config field.
+Verify: `cd bindings/python && pytest -q tests/test_cli_parity.py tests/test_router_args_parity.py`
 
 ### 5. Tests
 

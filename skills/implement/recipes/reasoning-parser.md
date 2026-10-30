@@ -4,161 +4,76 @@ verified: 176ce3ae88f7f857441853c7dc2e087e3277b5c0
 level: anchors
 watch:
   - crates/reasoning_parser/src/
+exemplars:
+  - 9d639713   # MiniMax-M3: parser file, factory key + patterns, chat_template.rs thinking_mode toggle, gateway arming
+  - 81d43443   # DeepSeek-V4.1: parser file plus the tests/deepseek_v41.rs integration test
+  - f22e1067   # Hy4: parser, tests/hy_v4.rs, README row, reasoning_effort toggle
 ---
 
-# Adding a Reasoning Parser to SMG
+# Add a legacy reasoning parser
 
-> **Legacy lane.** At SMG v1.13.0 the gateway's default parser is Symphony (`--parser symphony`, see @symphony-format.md): new model support goes into a Symphony format table, not here. Follow this recipe only for the `--parser legacy` lane, or for a model outside Symphony's registry that must keep a legacy parser name (`--tool-call-parser` / `--reasoning-parser`).
+A parser implements `ReasoningParser` (`crates/reasoning_parser/src/traits.rs`); most compose `BaseReasoningParser` (`parsers/base.rs`) with a `ParserConfig` (two tokens and `always_in_reasoning`) and delegate every method to `self.base`.
+It lives in `crates/reasoning_parser/src/parsers/<name>.rs` and is registered in `ParserFactory::new()` (`crates/reasoning_parser/src/factory.rs`) by key and by model-ID pattern.
+The gateway builds one per request (`create_reasoning_parser` in `model_gateway/src/routers/grpc/utils/parsers.rs`) and arms it from the chat template's thinking toggle.
+A model that reuses plain `<think>` / `</think>` needs no file: register `BaseReasoningParser::new(config).with_model_type(...)` inline in the factory, as `deepseek_v31`, `deepseek_v4`, `kimi_k25` and `kimi_thinking` do.
 
-Most parsers are thin wrappers around `BaseReasoningParser`, configured with two tokens and an `always_in_reasoning` flag, then registered in the factory by name + model-ID pattern.
+Not this recipe:
+- Legacy lane only. At v1.13.0 the default parser is Symphony (`--parser symphony`, @symphony-format.md): new model support goes into a Symphony format table. Follow this recipe for `--parser legacy`, or for a model outside Symphony's registry that must keep a legacy name (`--tool-call-parser` / `--reasoning-parser`).
 
-## Inputs to gather first
+## Inputs
 
-| Input | Example | Notes |
-|-------|---------|-------|
-| `MODEL_NAME` | `mymodel` | Snake case. Used as file name, struct prefix (`MymodelParser`), factory key, `model_type`. The factory key is user-facing: `--reasoning-parser <key>`, the per-model `reasoning_parser` worker label / `ModelCard` override (validated via `registry().has_parser`), and Python `get_available_reasoning_parsers()` |
-| Tokens | `<think>` / `</think>` | Start/end delimiters. Confirm against vLLM/SGLang, HF `tokenizer_config.json` (`added_tokens_decoder` / `chat_template`), or model card |
-| `always_in_reasoning` | `true` / `false` | `true` only when the template has NO thinking toggle and output always begins inside reasoning (DeepSeek-R1, MiniMax M2, Step3, Qwen3-Thinking). `false` whenever the template exposes an `enable_thinking` / `thinking` toggle (Qwen3, GLM-4.5, Kimi-K2.5, Nemotron, DeepSeek-V4) even if it prefills `<think>` — the gateway arms the parser per request via `should_mark_reasoning_started` (`routers/grpc/utils/parsers.rs`), keyed on the `ThinkingToggle` detected from the chat template |
-| Patterns | `["my-model", "mymodel-v2"]` | Case-insensitive substrings matched against the model ID. List every variant/alias |
+| Input | Example | Used in |
+|---|---|---|
+| Key | `<name>` (file, `with_model_type`, factory key); user-facing as `--reasoning-parser <name>`, the per-model `reasoning_parser` worker label / `ModelCard` override (validated through `registry().has_parser`) and Python `get_available_reasoning_parsers()` | steps 1-3 |
+| Tokens | `<think>` / `</think>`; confirm against vLLM/SGLang, HF `tokenizer_config.json` (`added_tokens_decoder` / `chat_template`) or the model card | step 1 |
+| `always_in_reasoning` | `true` only when the template has no thinking toggle and output always begins inside reasoning (DeepSeek-R1, MiniMax M2, Step3, Qwen3-Thinking); `false` whenever the template exposes an `enable_thinking` / `thinking` / `thinking_mode` / `reasoning_effort` toggle (Qwen3, GLM-4.5, Kimi-K2.5, Nemotron, DeepSeek-V4), even if it prefills `<think>` | steps 1, 5 |
+| Patterns | `["<family>", "<family>-v2"]`: case-insensitive substrings of the model ID; list every alias | step 3 |
 
 ## Steps
 
-### Step 1: Create the parser file
+### 1. Write the parser
 
-**File:** `crates/reasoning_parser/src/parsers/{MODEL_NAME}.rs`
+File: `crates/reasoning_parser/src/parsers/<name>.rs` — Do: model on `parsers/deepseek_r1.rs`: a struct holding `base: BaseReasoningParser`, built from `ParserConfig { think_start_token, think_end_token, stream_reasoning: true, max_buffer_size: DEFAULT_MAX_BUFFER_SIZE, always_in_reasoning }` and `with_model_type`. Delegate the seven required methods (`detect_and_parse_reasoning`, `parse_reasoning_streaming_incremental`, `reset`, `model_type`, `is_in_reasoning`, `mark_reasoning_started`, `mark_think_start_stripped`) and the defaulted `flush` to `self.base`. Override the other default, `requires_special_tokens()`, to `true` only when the delimiters are tokenizer special tokens (`<|content_thinking|>`, `<|open|>think<|sep|>`); otherwise detokenization strips them before the parser sees them (`parsers/inkling.rs`, `parsers/kimi_k3.rs`). Add `#[cfg(test)]` unit tests for `model_type()` and one extraction.
+Verify: `cargo check -p reasoning-parser` → compiles; omitting a required method or using a field such as `initial_in_reasoning` fails here (the field is `always_in_reasoning`).
+Trap: `flush()` has an empty default, so a wrapper that does not delegate it compiles but drops the text held at stream end; `crates/reasoning_parser/tests/eof.rs::flush_preserves_partial_markers_for_every_parser` walks every registered key and fails for it.
 
-Model this on `parsers/deepseek_r1.rs`. The `ReasoningParser` trait has seven required methods — delegate all to `self.base` — plus one defaulted method, `requires_special_tokens()` (default `false`). Override it to `true` only when your delimiters are tokenizer special tokens rather than plain text (`<|content_thinking|>`, `<|open|>think<|sep|>`); otherwise detokenization strips them before the parser sees them (see `parsers/inkling.rs`, `parsers/kimi_k3.rs`). Use `DEFAULT_MAX_BUFFER_SIZE` (4 MB), not a literal.
+### 2. Export it
 
-```rust
-use crate::{
-    parsers::BaseReasoningParser,
-    traits::{ParseError, ParserConfig, ParserResult, ReasoningParser, DEFAULT_MAX_BUFFER_SIZE},
-};
+File: `crates/reasoning_parser/src/parsers/mod.rs` — Do: `pub mod <name>;` and `pub use <name>::<Name>Parser;`. File: `crates/reasoning_parser/src/lib.rs` — Do: add `<Name>Parser` to the `pub use parsers::{ ... }` block.
+Verify: `cargo check -p reasoning-parser`
+Trap: the factory imports from `crate::parsers`, so `mod.rs` alone compiles, but external callers and the integration tests use `reasoning_parser::<Name>Parser`; keep `lib.rs` in sync or the public API drifts.
 
-pub struct MymodelParser {
-    base: BaseReasoningParser,
-}
+### 3. Register in the factory
 
-impl MymodelParser {
-    pub fn new() -> Self {
-        let config = ParserConfig {
-            think_start_token: "<think>".to_string(),
-            think_end_token: "</think>".to_string(),
-            stream_reasoning: true,
-            max_buffer_size: DEFAULT_MAX_BUFFER_SIZE,
-            always_in_reasoning: false,
-        };
-        Self {
-            base: BaseReasoningParser::new(config).with_model_type("mymodel".to_string()),
-        }
-    }
-}
+File: `crates/reasoning_parser/src/factory.rs` — Do: import the type; in `ParserFactory::new()` add `registry.register_parser("<name>", || Box::new(<Name>Parser::new()))` and one `registry.register_pattern("<alias>", "<name>")` per alias. Matching is `model_id.to_lowercase().contains(pattern)` in `create_for_model` (`has_parser_for_model` does the same check without building); the first hit wins, so put specific patterns before broad ones and before an existing family that is their substring (`kimi-k3` is registered before `kimi`, `qwen3-thinking` before `qwen3` and `qwen`).
+Verify: `cargo test -p reasoning-parser`
+Trap: a broad pattern registered ahead of a specific one shadows it silently: the model resolves, to the wrong parser.
 
-impl Default for MymodelParser {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+### 4. Write the integration test
 
-impl ReasoningParser for MymodelParser {
-    fn detect_and_parse_reasoning(&mut self, text: &str) -> Result<ParserResult, ParseError> {
-        self.base.detect_and_parse_reasoning(text)
-    }
+File: `crates/reasoning_parser/tests/<name>.rs` — Do: one file per parser (`crates/reasoning_parser/tests/deepseek_v41.rs`, `gemma4.rs`, `crates/reasoning_parser/tests/hy_v4.rs`), importing `reasoning_parser::{ParserFactory, ReasoningParser, DEFAULT_MAX_BUFFER_SIZE}` or `reasoning_parser::parsers::<Name>Parser`. Drive `parse_reasoning_streaming_incremental` across every chunk boundary of a sample, after `mark_reasoning_started()` and without it, and end with `flush()`; resolve the factory by a model ID to pin the pattern.
+Verify: `cargo test -p reasoning-parser --test <name>`
 
-    fn parse_reasoning_streaming_incremental(
-        &mut self,
-        text: &str,
-    ) -> Result<ParserResult, ParseError> {
-        self.base.parse_reasoning_streaming_incremental(text)
-    }
+### 5. Teach the gateway the toggle
 
-    fn reset(&mut self) {
-        self.base.reset();
-    }
+File: `crates/tokenizer/src/chat_template.rs` — Do: when the template exposes a thinking switch `detect_thinking_toggle` does not know, return its `ThinkingToggle` (`DefaultOn` / `DefaultOff`) and `ThinkingKeyName` (`EnableThinking`, `Thinking`, `ThinkingMode`, `ReasoningEffort`; 9d639713 added `thinking_mode`, f22e1067 the `reasoning_effort` on/off words). File: `model_gateway/src/routers/grpc/utils/parsers.rs` — Do: read the kwarg in `extract_thinking_from_kwargs`; `should_mark_reasoning_started` arms the parser from the detected toggle.
+Verify: `cargo test -p llm-tokenizer chat_template && cargo test -p smg parsers`
+Trap: with `always_in_reasoning: false` and an undetected toggle the parser is never armed, so a prefilled `<think>` block streams as content.
 
-    fn model_type(&self) -> &str {
-        self.base.model_type()
-    }
+### 6. Document
 
-    fn is_in_reasoning(&self) -> bool {
-        self.base.is_in_reasoning()
-    }
+File: `crates/reasoning_parser/README.md` — Do: add a row to the "Supported Models" table (`Model | Token Format | Notes`), as f22e1067 does for Hy4.
+Verify: `grep <Name> crates/reasoning_parser/README.md`
 
-    fn mark_reasoning_started(&mut self) {
-        self.base.mark_reasoning_started();
-    }
+### 7. Gate
 
-    fn mark_think_start_stripped(&mut self) {
-        self.base.mark_think_start_stripped();
-    }
-}
+Run `smg:contribute`.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+## Rules
 
-    #[test]
-    fn test_model_type() {
-        let parser = MymodelParser::new();
-        assert_eq!(parser.model_type(), "mymodel");
-    }
-
-    #[test]
-    fn test_reasoning_extraction() {
-        let mut parser = MymodelParser::new();
-        let result = parser
-            .detect_and_parse_reasoning("<think>thinking here</think>normal text")
-            .unwrap();
-        assert_eq!(result.reasoning_text, "thinking here");
-        assert_eq!(result.normal_text, "normal text");
-    }
-}
-```
-
-**Verify:** `cargo check -p reasoning-parser`
-
-**Anti-pattern:** Omitting `mark_reasoning_started` / `mark_think_start_stripped`, or using a non-existent field like `initial_in_reasoning`. Both fail to compile — the trait requires all seven of these methods and the field is `always_in_reasoning`.
-
-### Step 2: Export the parser
-
-**File:** `crates/reasoning_parser/src/parsers/mod.rs`
-```rust
-pub mod mymodel;
-pub use mymodel::MymodelParser;
-```
-
-**File:** `crates/reasoning_parser/src/lib.rs` — add `MymodelParser` to the `pub use parsers::{ ... }` block.
-
-**Verify:** `cargo check -p reasoning-parser`
-
-**Anti-pattern:** Updating only `mod.rs`. The factory imports from `crate::parsers`, so it still compiles — but every parser is also re-exported from the crate root for external callers (`reasoning_parser::XParser`); keep the `lib.rs` list in sync or the public API drifts.
-
-### Step 3: Register in the factory
-
-**File:** `crates/reasoning_parser/src/factory.rs` — add `MymodelParser` to the `use crate::parsers::{...}` list, then in `ParserFactory::new()`:
-
-```rust
-registry.register_parser("mymodel", || Box::new(MymodelParser::new()));
-
-registry.register_pattern("my-model", "mymodel");
-registry.register_pattern("mymodel-v2", "mymodel");
-```
-
-Patterns are matched **case-insensitive substring**: `model_id.to_lowercase().contains(pattern)` (factory.rs `create_for_model`; `has_parser_for_model` does the same check without building the parser). First match wins; order more specific patterns before broader ones.
-
-**Verify:** `cargo test -p reasoning-parser`
-
-**Anti-pattern:** A broad pattern (e.g. `"my"`) placed before a more specific one, or registered ahead of an existing family — it shadows the intended parser since the first substring hit wins.
-
-### Step 4: Quality gate
-
-Invoke `smg:contribute` to run fmt -> clippy -> test -> bindings -> commit.
-
-## Critical Rules
-
-- Compose `BaseReasoningParser`; delegate all seven required trait methods to `self.base`. It already solves partial tokens, buffer overflow, and start/end stripping. Exception: multi-channel / typed-block formats that are not a single start/end pair implement `ReasoningParser` directly and override `requires_special_tokens()` — see `parsers/kimi_k3.rs` (`KimiK3Parser`) and `parsers/inkling.rs` (`InklingParser`); still enforce `DEFAULT_MAX_BUFFER_SIZE` and make `reset()` clear all state.
-- For a model with no thinking toggle whose output always starts mid-reasoning, set `always_in_reasoning: true` — that is the entire customization (file-based examples: `parsers/minimax.rs` `MiniMaxParser`, and `parsers/qwen3.rs` `QwenThinkingParser`, factory key `qwen3_thinking`). No `is_first_chunk` field or method overrides.
-- `BaseReasoningParser::new` seeds `in_reasoning` from `always_in_reasoning`, and `reset()` restores it — so `is_in_reasoning()` equals the flag on a fresh or reset parser.
-- A new model only needs its own file when it has distinct tokens or behavior. Models reusing standard `<think>`/`</think>` can be a config-only `BaseReasoningParser::new(config).with_model_type(...)` registered inline in the factory (see `deepseek_v31`, `kimi_k25`, `kimi_thinking`) — no file in `parsers/`.
-- `ParserResult` has exactly two fields: `reasoning_text` and `normal_text`.
-- Unknown model IDs fall back to the `passthrough` parser, never an error.
+- `BaseReasoningParser` already solves partial tokens, buffer overflow and start/end stripping; use `DEFAULT_MAX_BUFFER_SIZE` (4 MB), never a literal. Multi-channel or typed-block formats that are not a single start/end pair implement `ReasoningParser` directly (`parsers/kimi_k3.rs` `KimiK3Parser`, `parsers/inkling.rs` `InklingParser`), still enforce `DEFAULT_MAX_BUFFER_SIZE` and clear all state in `reset()`.
+- `always_in_reasoning: true` is the entire customization for a no-toggle model (`parsers/minimax.rs` `MiniMaxParser`, `parsers/qwen3.rs` `QwenThinkingParser`, key `qwen3_thinking`); there is no `is_first_chunk` field and no method override.
+- `BaseReasoningParser::new` seeds `in_reasoning` from `always_in_reasoning` and `reset()` restores it, so `is_in_reasoning()` equals the flag on a fresh or reset parser.
+- `ParserResult` has exactly two fields, `reasoning_text` and `normal_text`.
+- Unknown model IDs fall back to `passthrough`, never an error.
+- A new family lands its tool parser in the same change: `crates/tool_parser/src/parsers/<name>.rs` and a case under `crates/tool_parser/tests/models/` (@tool-parser.md); every recent exemplar did both.

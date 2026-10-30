@@ -19,7 +19,7 @@ exemplars:
 
 # Add an HTTP API endpoint
 
-An endpoint is one `RouterTrait` method with a 501 default (`model_gateway/src/routers/mod.rs`), an axum handler and `.route(...)` in `model_gateway/src/server.rs`, a dispatch arm in `routers/gateway.rs` that picks a router family able to serve it, and an implementation per serving family: `routers/http/router.rs` forwards the typed body to an HTTP worker, `routers/grpc/router.rs` runs a `RequestPipeline` of per-endpoint stages. The body type lives in `crates/protocols/` (package `openai-protocol`) and reaches the handler through `ValidatedJson`.
+An endpoint is one `RouterTrait` method with a 501 default (`model_gateway/src/routers/mod.rs`), an axum handler and `.route(...)` in `model_gateway/src/server.rs`, a match arm in `routers/gateway.rs` that picks a router family able to serve it, and an implementation per serving family: `routers/http/router.rs` forwards the typed body to an HTTP worker, `routers/grpc/router.rs` runs a `RequestPipeline` of per-endpoint stages. The body type lives in `crates/protocols/` (package `openai-protocol`) and reaches the handler through `ValidatedJson`.
 
 Not this recipe:
 - a third-party provider serving an endpoint SMG already mounts: @provider-api.md

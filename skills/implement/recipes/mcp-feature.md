@@ -5,42 +5,33 @@ level: anchors
 watch:
   - crates/mcp/src/
   - crates/external_router/src/mcp_utils.rs
+exemplars:
+  # none since 2026-08-20 — the only non-test change, 98d6aea7 (inventory refresh fix), touched core/orchestrator.rs and inventory/index.rs
 ---
 
-# Adding MCP Features to SMG
+# Customize MCP approval or add a transport
 
-`smg-mcp` (`crates/mcp/`) is the Model Context Protocol client: it discovers tools on external servers, gates execution behind an approval policy, and proxies calls. The crate is **OpenAI-protocol-free** — response-format adapter logic lives in the `smg-external-router` crate (`crates/external_router/src/openai_bridge/`, re-exported as `model_gateway::routers::common::openai_bridge`), not here (`lib.rs` crate doc). Built on `rmcp` ^1.7 (`Cargo.toml`, `[dependencies] rmcp`; the committed `Cargo.lock` resolves 1.8.0). Note: rmcp 1.7 **dropped the standalone SSE client transport** — the `Sse` variant now returns an error (see Task B).
+`smg-mcp` (`crates/mcp/`) is the Model Context Protocol client: it discovers tools on external servers, gates calls behind an approval policy and proxies them. The crate is OpenAI-protocol-free — response-format adapters live in the `smg-external-router` crate (`crates/external_router/src/openai_bridge/`, re-exported as `model_gateway::routers::common::openai_bridge`), not here (`lib.rs` crate doc). `McpOrchestrator` (`core/orchestrator.rs`) owns the `ToolInventory` (`inventory/index.rs`), the connection pool (`core/pool.rs`) and an `Arc<ApprovalManager>` built from `McpConfig` (`core/config.rs`). Built on `rmcp` ^1.7 (`Cargo.toml`; the committed `Cargo.lock` resolves 1.8.0), which dropped the standalone SSE client transport.
 
-Central type: `McpOrchestrator` (`core/orchestrator.rs`) owns the inventory, connection pool, and an `Arc<ApprovalManager>` built from `McpConfig` (`core/config.rs`).
+Not this recipe:
+- Builtin tools: `BuiltinToolType` (`core/config.rs`: `WebSearchPreview | CodeInterpreter | FileSearch | ImageGeneration`, the `image_generation` builtin). A server with a `builtin_type` is filtered out of the visible tool list and routed as a builtin (`core/session.rs`, `is_builtin_tool`, `mcp_servers`); a new variant extends `BuiltinToolType::all()`, whose `_exhaustive` closure makes the compiler flag every site.
+- The inventory refresh (`spawn_refresh_handler`, `load_server_inventory`; 98d6aea7 keeps a server's tools when its listing fails and clears each kind only after its own listing succeeded — `clear_server_tool_entries`, `clear_server_prompts`, `clear_server_resources`).
 
-```
-crates/mcp/src/
-  annotations.rs     → ToolAnnotations, AnnotationType
-  error.rs           → McpError, McpResult, ApprovalError
-  tenant.rs          → TenantContext, TenantId, SessionId
-  core/  orchestrator.rs (central) · session.rs · config.rs · pool.rs
-         handler.rs · proxy.rs · reconnect.rs · metrics.rs
-  approval/  manager.rs · policy.rs · audit.rs
-  inventory/ index.rs · types.rs
-```
+## Inputs
 
-The two realistic tasks are **customizing the approval policy** and **adding a transport**. Pick the matching section.
+| Input | Example | Used in |
+|---|---|---|
+| Server or tool to govern | `"dangerous_server:delete_all"` | A1 |
+| Rule shape | regex on the tool name + an annotation condition | A2 |
+| New transport protocol | `protocol: websocket` | B1–B5 |
 
----
+## Steps
 
-## Task A: Customize the approval policy
+Task A — customize the approval policy. `PolicyEngine` (`approval/policy.rs`) decides per call; `evaluate()` checks, in order: 1. the explicit tool policy (`tool_policies`, keyed `QualifiedToolName`); 2. the server policy with its `TrustLevel` (`evaluate_with_trust`) — short-circuits only when the server is `Trusted` or the result is not `Allow`; an `Allow` from a non-`Trusted` server falls through; 3. pattern `rules` (`Vec<PolicyRule>`, insertion order); 4. the annotation default (read-only → Allow, destructive → deny, else `default_policy`). `PolicyDecision` is `Allow | Deny | DenyWithReason(Arc<str>)`; `TrustLevel` is `Trusted | Standard (default) | Untrusted | Sandboxed`.
 
-`PolicyEngine` (`approval/policy.rs`, `struct PolicyEngine`) decides per call. `evaluate()` checks, in order:
-1. Explicit tool policy (`tool_policies`, keyed `QualifiedToolName`)
-2. Server policy + `TrustLevel` (`evaluate_with_trust`) — short-circuits only when the server is `Trusted` or the result is not `Allow`; an `Allow` from a non-`Trusted` server falls through to steps 3-4
-3. Pattern `rules` (`Vec<PolicyRule>`, evaluated in insertion order)
-4. Annotation default (read_only→Allow, destructive→deny, else `default_policy`)
+### A1. Add a config-driven server or tool policy
 
-`PolicyDecision` (`enum PolicyDecision`) is `Allow | Deny | DenyWithReason(Arc<str>)`. `TrustLevel` (`enum TrustLevel`) is `Trusted | Standard (default) | Untrusted | Sandboxed`.
-
-### Add a config-driven server/tool policy
-
-Edit YAML — no code. `from_yaml_config` (`policy.rs`) reads `default`, `servers`, and `tools` into the engine. Mirror the `policy:` block in `config.rs` tests (`core/config.rs`, `test_policy_config_yaml_full`):
+File: the MCP YAML, no code — Do: `from_yaml_config` reads `default`, `servers` and `tools` (`PolicyConfig`, `core/config.rs`); mirror the `policy:` block of `test_policy_config_yaml_full`:
 
 ```yaml
 policy:
@@ -52,59 +43,60 @@ policy:
     "risky_server:format_disk": { deny_with_reason: "too dangerous" }
 ```
 
-Config enums are the `*Config` mirrors (`TrustLevelConfig`, `PolicyDecisionConfig` in `config.rs`) with `From` impls in `policy.rs` (`impl From<PolicyDecisionConfig>`, `impl From<TrustLevelConfig>`). Tool keys MUST be `"server:tool"` — a bad key is logged and skipped (`policy.rs`, `from_yaml_config`'s `else` branch).
+The config enums are the `*Config` mirrors (`TrustLevelConfig`, `PolicyDecisionConfig`) with `From` impls in `policy.rs`.
+Verify: `cargo test -p smg-mcp test_policy_config_yaml_full`
+Trap: a tool key that is not `server:tool` is logged and skipped by `from_yaml_config`'s `else` branch — the policy silently never applies.
 
-**Anti-pattern:** expecting pattern `rules` from YAML. `PolicyRule` holds a `Regex` and has **no** serde derive; `from_yaml_config` never populates `rules`. Pattern rules are code-only (below).
+### A2. Add a pattern rule (code only)
 
-### Add a pattern rule (regex / annotation-conditioned)
-
-`PolicyRule { name, pattern: RulePattern, condition: RuleCondition, decision: PolicyDecision }` (`policy.rs`, `struct PolicyRule`). `RulePattern` (`enum RulePattern`) = `Server(Regex) | Tool(Regex) | Qualified(Regex) | Any`; `RuleCondition` (`enum RuleCondition`) = `Always | HasAnnotation(AnnotationType) | LacksAnnotation(AnnotationType)`. Add via the builder `with_rule`, modeled on the `test_pattern_rule` test and the `Default` impl (`impl Default for PolicyEngine`):
+File: `crates/mcp/src/approval/policy.rs` — Do: `PolicyRule::new(name, pattern, condition, decision)` with `RulePattern` = `Server(Regex) | Tool(Regex) | Qualified(Regex) | Any` and `RuleCondition` = `Always | HasAnnotation(AnnotationType) | LacksAnnotation(AnnotationType)` (`AnnotationType` = `Destructive | ReadOnly | Idempotent | OpenWorld`, `annotations.rs`). Add it through the builder `with_rule`, as `test_pattern_rule` and `impl Default for PolicyEngine` (the `allow_read_only` rule) do:
 
 ```rust
-use smg_mcp::approval::{PolicyDecision, PolicyEngine, PolicyRule, RuleCondition, RulePattern};
-use regex::Regex;
-
-let engine = PolicyEngine::new(audit_log)
-    .with_rule(PolicyRule::new(
-        "block_delete",
-        RulePattern::Tool(Regex::new("^delete_").unwrap()),
-        RuleCondition::Always,
-        PolicyDecision::Deny,
-    ));
+let engine = PolicyEngine::new(audit_log).with_rule(PolicyRule::new(
+    "block_delete", RulePattern::Tool(Regex::new("^delete_").unwrap()),
+    RuleCondition::Always, PolicyDecision::Deny,
+));
 ```
 
-To make this reachable from config you'd extend `from_yaml_config` and `PolicyConfig` (see @config-plumbing.md) — currently it is wired only through the constructor.
+To reach it from config, extend `PolicyConfig` and `from_yaml_config` (see @config-plumbing.md); today it is wired only through the constructor.
+Verify: `cargo test -p smg-mcp policy`
+Trap: `PolicyRule` holds a `Regex` and has no serde derive, so `from_yaml_config` never populates `rules` — a rule can only come from code.
 
-`AnnotationType` (`annotations.rs`, `enum AnnotationType`) = `Destructive | ReadOnly | Idempotent | OpenWorld`. `ToolAnnotations { read_only, destructive, idempotent, open_world }` (`struct ToolAnnotations`) come from rmcp with conservative defaults (destructive=true, open_world=true; `from_rmcp`). `should_require_approval()` = `destructive && !read_only`.
+Task B — add a transport. `McpTransport` (`core/config.rs`) is `#[serde(tag = "protocol", rename_all = "lowercase")]`: `Stdio { command, args, envs } | Sse { url, token, headers } | Streamable { url, token, headers }`. Adding one means adding a variant, then patching every exhaustive `match` the compiler lists.
 
-**Verify:** `cargo test -p smg-mcp policy`
+### B1. Add the variant
 
----
+File: `crates/mcp/src/core/config.rs` — Do: add the variant with its serde fields and extend `impl fmt::Debug for McpTransport` so secrets stay redacted.
+Verify: `cargo test -p smg-mcp test_transport_` (`test_transport_stdio` / `test_transport_sse` / `test_transport_streamable` show the parsing shape).
 
-## Task B: Add a transport
+### B2. Connect static servers
 
-Transports are the enum `McpTransport` (`core/config.rs`, `enum McpTransport`), tagged by `protocol` in YAML — `Stdio | Sse | Streamable`. Adding one = **add a variant, then patch every exhaustive `match` on it** (the compiler lists them):
+File: `crates/mcp/src/core/orchestrator.rs`, `connect_server_impl` — Do: build the rmcp transport and call `handler.serve(transport)`. Model on the `Streamable` arm: proxy via `super::proxy::resolve_proxy_config`, client via `build_http_client`, transport from `rmcp::transport::*` (`StreamableHttpClientTransport::with_client`). The `Sse` arm is not a template — it returns `Err(sse_unsupported(..))`.
+Verify: `cargo test -p smg-mcp orchestrator` → the connect tests pass for the new arm
 
-1. `core/config.rs` `enum McpTransport` — add the variant (with `#[serde]` fields).
-2. `core/orchestrator.rs` `connect_server_impl` — build the rmcp transport and call `handler.serve(transport)`. Model on the **`Streamable` arm** (the working reference): proxy via `super::proxy::resolve_proxy_config`, client via `build_http_client`, transport from `rmcp::transport::*` (`StreamableHttpClientTransport::with_client`). The `Sse` arm is **not** a template — it now returns `Err(sse_unsupported(..))` since rmcp 1.7 dropped the SSE client transport.
-3. `core/orchestrator.rs` `connect_dynamic_server_with_tenant` — dynamic path (Stdio is rejected here, "Stdio not supported for dynamic connections").
-4. `core/orchestrator.rs` `server_key` and `core/pool.rs` `PoolKey::from_config` — derive the pool key (url + `hash_auth(token, headers)`).
-5. (Dynamic/request-supplied servers only) `crates/external_router/src/mcp_utils.rs` `connect_mcp_servers` (re-exported as `model_gateway::routers::common::mcp_utils`) — the gateway builds an `McpTransport` from the request's `server_url` here (`/sse` → `Sse`, else `Streamable`). This is a **construction, not a match**, so the compiler will not flag it.
+### B3. Connect dynamic servers
 
-**Anti-pattern:** implementing an `rmcp::Transport` trait. SMG does not define transports as trait impls — it matches the `McpTransport` enum and hands an rmcp-provided transport (`StreamableHttpClientTransport`, `TokioChildProcess`) to `handler.serve()`. Also update the `Debug` impl (`config.rs`, `impl fmt::Debug for McpTransport`) so secrets stay redacted.
+File: `core/orchestrator.rs`, `connect_dynamic_server_with_tenant` — Do: the request-supplied path; `Stdio` is rejected here ("Stdio not supported for dynamic connections").
+Verify: `cargo test -p smg-mcp dynamic` → the dynamic-connection tests cover the new transport
 
-**Verify:** `cargo test -p smg-mcp` (transport parsing tests `test_transport_stdio` / `_sse` / `_streamable` live in `config.rs`).
+### B4. Derive the pool key
 
----
+File: `core/orchestrator.rs` `server_key` and `core/pool.rs` `PoolKey::from_config` — Do: url + `hash_auth(token, headers)` for HTTP transports.
+Verify: `cargo test -p smg-mcp pool` → two configs differing only in auth get distinct keys
 
-## Builtin-tool classification
+### B5. Route the gateway's construction site
 
-`BuiltinToolType` (`core/config.rs`, `enum BuiltinToolType`) has 4 variants — `WebSearchPreview`, `CodeInterpreter`, `FileSearch`, `ImageGeneration` (the `image_generation` builtin). A server configured with a `builtin_type` is filtered out of the visible tool list and routed as a builtin instead of a normal MCP tool (`core/session.rs`, `is_builtin_tool` / `mcp_servers` filtering). Adding a builtin variant means extending `BuiltinToolType::all()`'s exhaustive match (`core/config.rs`, `all()`) — the inner `_exhaustive` closure forces the compiler to flag every site when a variant is added.
+File: `crates/external_router/src/mcp_utils.rs`, `connect_mcp_servers` (re-exported as `model_gateway::routers::common::mcp_utils`) — Do: the gateway builds an `McpTransport` from a request's `server_url` here (`/sse` → `Sse`, else `Streamable`); add your scheme.
+Verify: `cargo test -p smg-mcp`
+Trap: this is a construction, not a `match`, so the compiler never flags it and a new protocol stays unreachable from requests.
 
----
+### Gate
 
-## Testing
+Run `smg:contribute`.
 
-Tests sharing process env (proxy vars) use `#[serial]` from `use serial_test::serial;` (`config.rs`, `test_proxy_from_env_*`) — **not** `#[serial_test]`. Approval/policy tests construct `PolicyEngine::new(Arc::new(AuditLog::new()))` (`policy.rs`, `test_engine` helper).
+## Rules
 
-**Verify:** `cargo test -p smg-mcp`, then invoke `smg:contribute` for fmt → clippy → test → commit.
+- SMG does not implement the `rmcp::Transport` trait: it matches `McpTransport` and hands an rmcp-provided transport (`StreamableHttpClientTransport`, `TokioChildProcess`) to `handler.serve()`.
+- `ToolAnnotations { read_only, destructive, idempotent, open_world }` come from rmcp with conservative defaults (`from_rmcp`: destructive = true, open_world = true); `should_require_approval()` = `destructive && !read_only`.
+- Tests sharing process env (proxy vars) use `#[serial]` from `use serial_test::serial;` (`test_proxy_from_env_*`, `core/config.rs`), not `#[serial_test]`; policy tests build `PolicyEngine::new(Arc::new(AuditLog::new()))` (`test_engine`).
+- Layout: `annotations.rs` (`ToolAnnotations`, `AnnotationType`), `error.rs` (`McpError`, `McpResult`, `ApprovalError`), `tenant.rs` (`TenantContext`, `TenantId`, `SessionId`), `core/{orchestrator,session,config,pool,handler,proxy,reconnect,metrics}.rs`, `approval/{manager,policy,audit}.rs`, `inventory/{index,types}.rs`.

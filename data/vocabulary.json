@@ -10,11 +10,15 @@
       "scope": "all",
       "allow": [
         "[\"'`“‘]legs?[\"'`”’]",
+        "[\"'`“‘]legs?\\b",
         "\\b(CI|lint|matrix|clippy|workflow)\\b.*\\blegs?\\b",
         "\\bleg: ",
+        "\\blegs?[\"'`”’]",
         "\\blegs?\\b.*\\b(CI|lint|matrix|clippy|workflow)\\b",
         "\\bnever\\b",
+        "\\bnot (its|a|the|as a) legs?\\b",
         "\\bnot (used|say|write)\\b",
+        "\\bsaid legs?\\b",
         "matrix\\.leg"
       ]
     },
@@ -37,7 +41,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs; SMG's docs state the failure handled",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]robust[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "seamless",
@@ -46,7 +53,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]seamless[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "leverage",
@@ -55,7 +65,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]leverage[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "comprehensive",
@@ -63,7 +76,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]comprehensive[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "delve",
@@ -72,7 +88,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]delve[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "utilize",
@@ -81,7 +100,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]utilize[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "cutting-edge",
@@ -90,7 +112,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]cutting-edge[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "streamline",
@@ -99,7 +124,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]streamline[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     },
     {
       "term": "enhance",
@@ -108,7 +136,10 @@
       "why": "generated-sounding prose; absent from SMG's 2,050 recent commit messages and its docs",
       "level": "warn",
       "scope": "prose",
-      "allow": []
+      "allow": [
+        "[\"'`“‘]enhance[\"'`”’]",
+        "\\b(absent|avoid|banned|filler|generated-sounding|flagged|flags)\\b"
+      ]
     }
   ]
 }

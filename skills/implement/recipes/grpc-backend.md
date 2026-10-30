@@ -110,8 +110,9 @@ Run `smg:contribute`.
 
 ## Rules
 
-- One file and one client type per engine, never a generic `mybackend.rs`; use the macros for whatever they cover.
+- One file and one client type per engine, never one generic file for several engines; use the macros for whatever they cover.
 - Inject trace context on every outbound RPC; log and continue on failure.
 - Connect only through `connect_channel` (`grpc://`/`grpcs://` normalisation, keep-alive); never build a raw `Channel`.
 - Tool and reasoning parsing is a router concern (`routers/grpc/regular/` and `utils/parsers.rs`), not the client crate's.
 - DP-rank pinning: the rank is set on the worker spec (`BasicWorkerBuilder::dp_config(rank, size)` in `model_gateway/src/worker/builder.rs`) and read via `worker.dp_rank()`.
+- An RPC or label the ZMQ lane must also answer lands in `crates/engine_zmq_adapter/src/<engine>.rs` (@zmq-backend.md, step B1); the adapter is shared with the Rust servicer, so the servicer gets it too.
