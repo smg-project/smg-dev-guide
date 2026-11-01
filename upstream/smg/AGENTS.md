@@ -21,7 +21,7 @@ SMG (Shepherd Model Gateway) is a Rust gateway in front of LLM inference engines
 
 ```
 cargo +nightly fmt --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings   # drop --all-features without system OpenCV (bash scripts/install_opencv.sh)
+cargo clippy -p <package> --all-targets --all-features -- -D warnings  # the crates you touched (CI lints the whole workspace); drop --all-features without system OpenCV (bash scripts/install_opencv.sh)
 cargo test -p <package>                                                  # the workspace is large; scope it
 make python-dev                                                          # after config/, crates/protocols/ or bindings/ changes
 cargo run -p smg --bin smg -- --help                                     # two bins, no default-run

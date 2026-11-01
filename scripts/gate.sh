@@ -3,32 +3,38 @@
 # .github/workflows/pr-test-rust.yml and pr-naming-check.yml enforce, so an agent runs this once,
 # reads a PASS/FAIL table, and fixes what failed instead of reciting the checks from memory.
 #
-# Usage: gate.sh [--fix] [--skip-tests] [--only STEPS] [--base REF] [--dry-run]
+# Usage: gate.sh [--fix] [--skip-tests] [--only STEPS] [--base REF] [--scope changed|workspace] [--dry-run]
 #   --fix         let rustfmt / ruff / pre-commit rewrite files instead of only checking
 #   --skip-tests  skip `cargo test` (fine while iterating; never for the last run before a push)
 #   --only STEPS  comma list from: fmt,clippy,test,hooks,python,go,lock,vocab,names,lanes   (default: all)
 #   --base REF    base for change detection and commit checks (default: origin/main)
-#   --dry-run     print the commands each step would run and exit
+#   --scope       changed (default): clippy and test run on the crates the diff touches (`-p` per crate, derived by
+#                 scripts/crate_scope.py; a workspace-level file widens it); workspace: every crate, what CI runs
+#   --dry-run     print the scope and the commands each step would run, then exit
 # Env:
-#   GATE_TEST_ARGS   extra args for cargo test, e.g. "-p smg" to scope a slow iteration
+#   GATE_TEST_ARGS   extra args for cargo test after the scope's -p list, e.g. "--lib" or "-p smg" to add a crate
 #
 # Exit status: 0 when every applicable step passed, 1 otherwise.
 set -u
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/detect_smg.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/lib/detect_smg.sh"
 
-fix=0; skip_tests=0; only=""; base="origin/main"; dry=0
+fix=0; skip_tests=0; only=""; base="origin/main"; scope="changed"; dry=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --fix) fix=1;;
     --skip-tests) skip_tests=1;;
     --only) only="$2"; shift;;
     --base) base="$2"; shift;;
+    --scope) scope="$2"; shift;;
     --dry-run) dry=1;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 2;;
   esac
   shift
 done
+case "$scope" in changed|workspace) ;; *) echo "--scope takes changed or workspace, not '$scope'" >&2; exit 2;; esac
 
 root="$(smg_root "$PWD")" || { echo "gate.sh: run this inside an SMG checkout" >&2; exit 2; }
 cd "$root" || exit 2
@@ -52,6 +58,34 @@ else
   detect_note="(base $base not found: treating every file as changed)"
 fi
 touched() { printf '%s\n' "$changed" | grep -qE "$1"; }
+
+# Rust scope: the workspace packages the diff touches (one -p per crate: the package whose Cargo.toml is the
+# nearest ancestor of a changed file), or the whole workspace when a workspace-level file changed (Cargo.toml,
+# Cargo.lock, .cargo/, clippy.toml, rust-toolchain.toml) or --scope workspace asked for it. The whole-workspace
+# clippy and test runs are CI's (rust-lint, rust-tests); the row names the scope it ran on.
+pkgs=(); target_args=(--workspace); scope_note="whole workspace (--scope workspace)"
+if [ "$scope" = changed ]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    scope=workspace; scope_note="whole workspace (no python3 to derive the touched crates)"
+  else
+    scope_in="$changed"
+    # the wasm guest examples are fixtures of crates/wasm's tests: a change there is a change to that crate
+    touched '^examples/wasm/' && scope_in="$scope_in"$'\n'"crates/wasm/Cargo.toml"
+    if ! scope_out="$(printf '%s\n' "$scope_in" | python3 "$guide/scripts/crate_scope.py" --smg "$root" - 2>/dev/null)"; then
+      scope=workspace; scope_note="whole workspace (crate_scope.py failed; run it by hand to see why)"
+    elif [ "$scope_out" = workspace ]; then
+      scope=workspace; scope_note="whole workspace (a workspace-level file changed)"
+    else
+      while read -r p; do [ -n "$p" ] && pkgs+=("$p"); done <<<"$scope_out"
+      target_args=()
+      for p in ${pkgs[@]+"${pkgs[@]}"}; do target_args+=(-p "$p"); done
+      joined="$(printf '%s, ' ${pkgs[@]+"${pkgs[@]}"})"; joined="${joined%, }"
+      scope_note="${#pkgs[@]} crate$([ "${#pkgs[@]}" = 1 ] || printf s): $joined"
+      [ "${#pkgs[@]}" = 0 ] && scope_note="no crate touched"
+    fi
+  fi
+fi
+[ "$dry" = 1 ] && printf '%-8s %s\n' scope "$scope_note"
 
 run() {  # run <step> <description> <command...>
   local step="$1" desc="$2"; shift 2
@@ -78,11 +112,13 @@ fi
 
 # 2. clippy ------------------------------------------------------------------------------------
 if want clippy; then
-  if ! need cargo; then skip clippy "cargo not installed"; else
+  if ! need cargo; then skip clippy "cargo not installed"
+  elif [ "$scope" = changed ] && [ "${#pkgs[@]}" = 0 ]; then skip clippy "no crate touched (nothing under a workspace package changed); CI's rust-lint lints the whole workspace"
+  else
     if (need pkg-config && pkg-config --exists opencv4 2>/dev/null) || [ -d /usr/include/opencv4 ] || [ -d /usr/local/include/opencv4 ] || [ -d /opt/homebrew/include/opencv4 ]; then
-      run clippy "clippy, all features (what the all-features CI leg runs)" cargo clippy --workspace --all-targets --all-features -- -D warnings
+      run clippy "clippy, all features, $scope_note (CI's all-features leg runs it on the whole workspace)" cargo clippy "${target_args[@]}" --all-targets --all-features -- -D warnings
     else
-      run clippy "clippy, default features (no system OpenCV here; CI's all-features leg also lints the opencv-video feature: install with bash scripts/install_opencv.sh)" cargo clippy --workspace --all-targets -- -D warnings
+      run clippy "clippy, default features, $scope_note (no system OpenCV here; CI's all-features leg lints the whole workspace with the opencv-video feature: install with bash scripts/install_opencv.sh)" cargo clippy "${target_args[@]}" --all-targets -- -D warnings
     fi
   fi
 fi
@@ -91,12 +127,13 @@ fi
 if want test; then
   if [ "$skip_tests" = 1 ]; then skip test "--skip-tests given; run without it before pushing"
   elif ! need cargo; then skip test "cargo not installed"
+  elif [ "$scope" = changed ] && [ "${#pkgs[@]}" = 0 ]; then skip test "no crate touched (nothing under a workspace package changed); CI's rust-tests runs the whole workspace"
   else
     if touched '^(crates/wasm/|examples/wasm/)' && [ -f crates/wasm/tests/fixtures/build_fixtures.sh ]; then
       run test "build WASM guest fixtures (wasm paths changed; without them the guest tests skip silently)" bash crates/wasm/tests/fixtures/build_fixtures.sh || true
     fi
     # shellcheck disable=SC2086
-    run test "cargo test ${GATE_TEST_ARGS:-}" cargo test ${GATE_TEST_ARGS:-}
+    run test "cargo test, $scope_note ${GATE_TEST_ARGS:-}" cargo test "${target_args[@]}" ${GATE_TEST_ARGS:-}
   fi
 fi
 

@@ -53,7 +53,10 @@ jobs:
       - name: Compile scripts
         run: |
           python3 -m py_compile scripts/*.py scripts/hooks/*.py
-          for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh; do bash -n "$f"; done
+          for f in scripts/*.sh scripts/hooks/*.sh scripts/lib/*.sh scripts/tests/*.sh; do bash -n "$f"; done
+
+      - name: Test the gate's crate-scope derivation
+        run: bash scripts/tests/crate_scope_test.sh
 
       - name: Lint the guide
         run: python3 scripts/lint_guide.py

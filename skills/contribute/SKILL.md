@@ -13,11 +13,13 @@ description: Ship a change to the SMG repository. Use before committing, pushing
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh"                          # from anywhere inside the SMG checkout
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --fix                    # let rustfmt / ruff / pre-commit rewrite files
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --skip-tests --only fmt,clippy,vocab,names   # while iterating
-GATE_TEST_ARGS="-p smg" bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --only test          # scope a slow test run
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --dry-run                # print the commands instead of running them
+GATE_TEST_ARGS="--lib" bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --only test           # narrow the test run further
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --scope workspace        # clippy and tests on every crate (what CI runs)
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --dry-run                # print the scope and the commands instead of running them
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/crate_scope.py"                # the crates your diff touches, as the gate derives them
 ```
 
-The last run before a push is a plain `gate.sh`. It prints one row per step (`fmt`, `clippy`, `test`, `hooks`, `python`, `go`, `lock`, `vocab`, `names`, `lanes`): **PASS**, **FAIL** (fix and re-run), **WARN** (generated-sounding wording or a missing `Cargo.lock` change: reword or stage), **SKIP** (a tool you lack; CI runs that lane, so say so in the PR), **INFO** (the PR-title regex, the lanes this diff triggers). The steps mirror `CONTRIBUTING.md` ("The pre-PR gate") and `.github/workflows/pr-test-rust.yml`; without the script, run that section's commands by hand in the same order. Paste the table under the PR's `## Test Plan`.
+The last run before a push is a plain `gate.sh`. It prints one row per step (`fmt`, `clippy`, `test`, `hooks`, `python`, `go`, `lock`, `vocab`, `names`, `lanes`): **PASS**, **FAIL** (fix and re-run), **WARN** (generated-sounding wording or a missing `Cargo.lock` change: reword or stage), **SKIP** (a tool you lack; CI runs that lane, so say so in the PR), **INFO** (the PR-title regex, the lanes this diff triggers). The `clippy` and `test` rows are **scoped to the crates the diff touches**: the package whose `Cargo.toml` is the nearest ancestor of each changed file, one `-p` per crate, named in the row (`2 crates: smg, smg-symphony`). A change to the workspace `Cargo.toml`, `Cargo.lock`, `.cargo/`, `clippy.toml` or `rust-toolchain.toml` widens both rows to the whole workspace, `--scope workspace` asks for that explicitly, and a diff under no crate skips them. The whole-workspace clippy and test runs are CI's (`rust-lint`, `rust-tests`), never the gate's; `fmt` stays workspace-wide because it costs seconds. The steps mirror `CONTRIBUTING.md` ("The pre-PR gate") and `.github/workflows/pr-test-rust.yml`; without the script, run that section's commands by hand in the same order, with `-p` for the crates you touched. Paste the table under the PR's `## Test Plan`.
 
 ## Rules SMG's CI enforces
 
