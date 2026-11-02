@@ -38,7 +38,8 @@ def changed_files(smg: Path, base: str) -> list[str]:
     files, both paths of a rename. As gate.sh collects them; a missing merge base raises `BaseNotFound` rather
     than passing for a tree with no committed change."""
     def run(*args: str) -> list[str]:
-        r = subprocess.run(["git", "-C", str(smg), *args], capture_output=True, text=True)
+        # core.quotePath=false: a path with a non-ASCII character comes back as itself, not quoted and escaped
+        r = subprocess.run(["git", "-C", str(smg), "-c", "core.quotePath=false", *args], capture_output=True, text=True)
         return [l for l in r.stdout.split("\n") if l]
     mb = run("merge-base", base, "HEAD")
     if not mb:

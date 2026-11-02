@@ -52,10 +52,11 @@ record() { results+=("$1|$2"); notes+=("${3:-}"); }
 # file is a change to the crate it left as much as to the one it joined), for lane applicability and the Rust scope.
 merge_base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
 if [ -n "$merge_base" ]; then
-  changed="$( { git diff --name-only --no-renames "$merge_base" HEAD; git diff --name-only --no-renames; git diff --name-only --no-renames --cached; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)"
+  # core.quotePath=false: git would otherwise print a path with a non-ASCII character quoted and escaped, which no crate matches
+  changed="$( { git -c core.quotePath=false diff --name-only --no-renames "$merge_base" HEAD; git -c core.quotePath=false diff --name-only --no-renames; git -c core.quotePath=false diff --name-only --no-renames --cached; git -c core.quotePath=false ls-files --others --exclude-standard; } 2>/dev/null | sort -u)"
   detect_note=""
 else
-  changed="$(git ls-files)"
+  changed="$(git -c core.quotePath=false ls-files)"
   detect_note="(base $base not found: treating every file as changed)"
 fi
 touched() { printf '%s\n' "$changed" | grep -qE "$1"; }
@@ -128,7 +129,7 @@ fi
 if want test; then
   if [ "$skip_tests" = 1 ]; then skip test "--skip-tests given; run without it before pushing"
   elif ! need cargo; then skip test "cargo not installed"
-  elif [ "$scope" = changed ] && [ "${#pkgs[@]}" = 0 ]; then skip test "no crate touched (nothing under a workspace package changed); CI's rust-tests runs the whole workspace"
+  elif [ "$scope" = changed ] && [ "${#pkgs[@]}" = 0 ]; then skip test "no crate touched (nothing under a workspace package changed); CI's rust-tests runs the shards the changed paths can affect, which may be none"
   else
     if touched '^(crates/wasm/|examples/wasm/)' && [ -f crates/wasm/tests/fixtures/build_fixtures.sh ]; then
       run test "build WASM guest fixtures (wasm paths changed; without them the guest tests skip silently)" bash crates/wasm/tests/fixtures/build_fixtures.sh || true
