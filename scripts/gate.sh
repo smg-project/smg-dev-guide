@@ -178,15 +178,17 @@ if want names; then
     elif [ -n "$branch_regex" ] && ! [[ "$branch" =~ $branch_regex ]]; then
       record names FAIL "branch '$branch' must match <type>/<desc> or <username>/<desc> (CI closes the PR otherwise)"; ok=0
     fi
-    name="$(git config --get user.name || true)"; email="$(git config --get user.email || true)"
     if [ -n "$merge_base" ]; then
       while read -r sha; do
         [ -z "$sha" ] && continue
         subj="$(git log -1 --format=%s "$sha")"; body="$(git log -1 --format=%B "$sha")"
+        author="$(git log -1 --format='%an <%ae>' "$sha")"; committer="$(git log -1 --format='%cn <%ce>' "$sha")"
         if [ -n "$title_regex" ] && ! [[ "$subj" =~ $title_regex ]]; then
           record names FAIL "commit ${sha:0:10} subject is not conventional: '$subj'"; ok=0; fi
-        if ! grep -qxF "Signed-off-by: $name <$email>" <<<"$body"; then
-          record names FAIL "commit ${sha:0:10} lacks 'Signed-off-by: $name <$email>' (git commit -s; must match git config exactly)"; ok=0; fi
+        if ! grep -qxF "Signed-off-by: $author" <<<"$body"; then
+          record names FAIL "commit ${sha:0:10} lacks 'Signed-off-by: $author' (git commit -s as the author: the DCO check compares the trailer with the commit's author)"; ok=0; fi
+        if [ "$committer" != "$author" ]; then
+          record names WARN "commit ${sha:0:10} is authored by $author and committed by $committer (a rebase under another identity rewrites the committer; the DCO check reads the author)"; fi
         if [ -n "$ai_regex" ] && grep -qiE "$ai_regex" <<<"$body"; then
           record names FAIL "commit ${sha:0:10} carries an AI attribution trailer; CI rejects it"; ok=0; fi
       done < <(git rev-list --no-merges "$merge_base..HEAD")

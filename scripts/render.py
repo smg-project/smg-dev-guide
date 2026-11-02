@@ -81,7 +81,7 @@ def block_rules(sub, rules):
     return "\n".join([
         f"- **Branch**: {r['branch_rule']}; regex `{r['branch_regex']}`. Never commit on {', '.join(f'`{b}`' for b in r['no_commit_to'])} (pre-commit `no-commit-to-branch`); CI closes PRs from other branch names.",
         f"- **Commit subject**: `type(scope): summary` with type in {', '.join(f'`{t}`' for t in r['commit_types'])}, lowercase scope.",
-        "- **DCO**: `git commit -s`; the `Signed-off-by` trailer must equal `git config user.name <user.email>` exactly (`scripts/dco-check.sh`). Never `--no-verify`.",
+        "- **DCO**: `git commit -s`; the `Signed-off-by` trailer must equal the commit's author, `name <email>` exactly (`scripts/dco-check.sh` reads the identity the commit is made with, so `git -c user.name=... -c user.email=... commit -s` passes; the DCO check and the gate's `names` row compare the trailer with the author afterwards). Never `--no-verify`.",
         f"- **No AI attribution**: a `Co-authored-by` or `Signed-off-by` line matching `{r['ai_trailer_regex']}` fails the `no-ai-co-author` hook and CI.",
         f"- **PR title**: regex `{r['pr_title_regex']}`.",
         f"- **PR body**: the template headers {', '.join(f'`{h}`' for h in r['pr_body_headers'])}, each filled; the review bot posts the gaps otherwise.",
