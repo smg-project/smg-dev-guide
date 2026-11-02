@@ -93,7 +93,7 @@ One shape for all: front matter (`verified`, `level`, `watch`, `exemplars`), a f
 
 | Script | Use |
 |---|---|
-| `scripts/gate.sh [--fix] [--skip-tests] [--only ...] [--scope changed\|workspace] [--dry-run]` | the pre-PR gate: fmt, clippy and tests on the crates the diff touches (`--scope workspace` for every crate, which is what CI runs), pre-commit, Python/Go lanes, `Cargo.lock`, vocabulary, branch/commit rules, lanes; PASS/FAIL table |
+| `scripts/gate.sh [--fix] [--skip-tests] [--only ...] [--scope changed\|workspace] [--dry-run]` | the pre-PR gate: fmt, clippy and tests on the crates the diff touches (`--scope workspace` for every crate: the clippy run CI's `rust-lint` makes, and the whole test matrix, which main runs; a pull request's CI runs the test shards its paths can affect), pre-commit, Python/Go lanes, `Cargo.lock`, vocabulary, branch/commit rules, lanes; PASS/FAIL table |
 | `scripts/crate_scope.py [files]` | the workspace packages a diff touches (one `-p` per crate; `workspace` when a workspace-level file changed), as the gate scopes clippy and tests; `scripts/tests/crate_scope_test.sh` is its fixture test (runs in CI) |
 | `scripts/map_live.sh [dir]` | live crate map, gateway layout, policies, parser counts, CI lanes |
 | `scripts/lanes.py [files]` | which areas, recipes, review checklists and CI lanes a diff touches |

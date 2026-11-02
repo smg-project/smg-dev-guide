@@ -48,10 +48,11 @@ want() { [ -z "$only" ] || [[ ",$only," == *",$1,"* ]]; }
 results=(); notes=()
 record() { results+=("$1|$2"); notes+=("${3:-}"); }
 
-# Changed files relative to the base (committed + staged + unstaged), for lane applicability.
+# Changed files relative to the base (committed + staged + unstaged + untracked, and both paths of a rename: a moved
+# file is a change to the crate it left as much as to the one it joined), for lane applicability and the Rust scope.
 merge_base="$(git merge-base "$base" HEAD 2>/dev/null || true)"
 if [ -n "$merge_base" ]; then
-  changed="$( { git diff --name-only "$merge_base" HEAD; git diff --name-only; git diff --name-only --cached; } 2>/dev/null | sort -u)"
+  changed="$( { git diff --name-only --no-renames "$merge_base" HEAD; git diff --name-only --no-renames; git diff --name-only --no-renames --cached; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)"
   detect_note=""
 else
   changed="$(git ls-files)"

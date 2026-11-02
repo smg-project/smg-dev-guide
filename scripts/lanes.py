@@ -29,14 +29,24 @@ def find_smg(start: Path) -> Path | None:
         d = d.parent
 
 
+class BaseNotFound(Exception):
+    """`--base` names nothing the checkout shares history with (not fetched, or a typo)."""
+
+
 def changed_files(smg: Path, base: str) -> list[str]:
+    """The paths changed since the merge base with `base`: committed, staged, unstaged and untracked (not ignored)
+    files, both paths of a rename. As gate.sh collects them; a missing merge base raises `BaseNotFound` rather
+    than passing for a tree with no committed change."""
     def run(*args: str) -> list[str]:
         r = subprocess.run(["git", "-C", str(smg), *args], capture_output=True, text=True)
         return [l for l in r.stdout.split("\n") if l]
     mb = run("merge-base", base, "HEAD")
-    files = set(run("diff", "--name-only", mb[0], "HEAD")) if mb else set()
-    files |= set(run("diff", "--name-only"))
-    files |= set(run("diff", "--name-only", "--cached"))
+    if not mb:
+        raise BaseNotFound(base)
+    files = set(run("diff", "--name-only", "--no-renames", mb[0], "HEAD"))
+    files |= set(run("diff", "--name-only", "--no-renames"))
+    files |= set(run("diff", "--name-only", "--no-renames", "--cached"))
+    files |= set(run("ls-files", "--others", "--exclude-standard"))
     return sorted(files)
 
 
@@ -60,7 +70,11 @@ def main() -> int:
         if not smg:
             print("lanes.py: no files given and no SMG checkout found", file=sys.stderr)
             return 2
-        files = changed_files(smg, args.base)
+        try:
+            files = changed_files(smg, args.base)
+        except BaseNotFound:
+            print(f"lanes.py: no merge base with {args.base} (fetch it, pass --base, or name the files)", file=sys.stderr)
+            return 2
     areas = [a for a in data["areas"] if any(matches(f, p) for f in files for p in a["paths"])]
     lanes = sorted({l for a in areas for l in a["lanes"]})
     checklists = sorted({c for a in areas for c in a["checklists"]})

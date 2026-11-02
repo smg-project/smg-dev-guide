@@ -16,6 +16,8 @@ printf '[package]\nname = "beta"\nversion = "0.1.0"\n' > "$tmp/tools/beta/Cargo.
 : > "$tmp/Cargo.lock"
 : > "$tmp/.cargo/config.toml"
 : > "$tmp/docs/guide.md"
+ln -s ../../../docs/guide.md "$tmp/crates/alpha/src/linked.md"   # a symlink inside a crate, pointing outside every crate
+ln -s /dev/null "$tmp/.cargo/linked.toml"                        # a symlink under .cargo/, pointing outside the checkout
 
 fails=0
 expect() {  # expect <case> <expected output, space-joined> [--format args] -- <changed files...>
@@ -36,6 +38,8 @@ expect "Cargo.lock widens to the workspace"            "workspace"      -- crate
 expect ".cargo/ widens to the workspace"               "workspace"      -- .cargo/config.toml
 expect "the workspace manifest widens"                 "workspace"      -- Cargo.toml
 expect "files outside every crate add nothing"         ""               -- docs/guide.md README.md
+expect "a symlink is classified where it sits"         "alpha-lib"      -- crates/alpha/src/linked.md
+expect "a symlink under .cargo/ widens like a file"    "workspace"      -- .cargo/linked.toml
 expect "--format args prints the -p list"              "-p alpha-lib -p beta" --format args -- crates/alpha/src/lib.rs tools/beta/Cargo.toml
 
 if [ "$fails" -gt 0 ]; then echo "crate_scope_test: $fails failure(s)"; exit 1; fi

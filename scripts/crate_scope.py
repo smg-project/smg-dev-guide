@@ -9,7 +9,9 @@ compiles against, so any of them widens the scope to the whole workspace, printe
 `workspace`.
 
 Files come from the command line, from stdin with `-`, or (with neither) from `git diff --name-only
-<merge-base of --base> HEAD` plus the working tree of the SMG checkout found from the cwd (or --smg).
+<merge-base of --base> HEAD` plus the working tree (staged, unstaged and untracked files) of the SMG
+checkout found from the cwd (or --smg); a path is classified where it sits in the checkout, not where
+a symlink points.
 Used by gate.sh for its clippy and test rows; `--format args` prints the `-p` list cargo takes.
 
   crate_scope.py [--smg PATH] [--base REF] [--format lines|args] [FILES... | -]
@@ -21,7 +23,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from lanes import changed_files, find_smg
+from lanes import BaseNotFound, changed_files, find_smg
 
 # Root-level files whose change reaches every crate: the scope widens to the workspace.
 WIDENERS = ("Cargo.toml", "Cargo.lock", "clippy.toml", "rust-toolchain.toml")
@@ -59,7 +61,10 @@ def scope(root: Path, files: list[str]) -> list[str] | None:
     out: set[str] = set()
     for f in files:
         p = Path(f)
-        p = (p if p.is_absolute() else root / p).resolve()
+        p = p if p.is_absolute() else root / p
+        # The directories resolve (a checkout reached through a link), the last component does not: a tracked
+        # symlink is a change to the crate it sits in, wherever it points (even outside the checkout).
+        p = p.parent.resolve() / p.name
         try:
             rel = p.relative_to(root).as_posix()
         except ValueError:
@@ -92,7 +97,11 @@ def main() -> int:
     if files == ["-"]:
         files = [line.strip() for line in sys.stdin if line.strip()]
     elif not files:
-        files = changed_files(smg, args.base)
+        try:
+            files = changed_files(smg, args.base)
+        except BaseNotFound:
+            print(f"crate_scope.py: no merge base with {args.base} (fetch it, pass --base, or name the files)", file=sys.stderr)
+            return 2
     pkgs = scope(smg, files)
     if pkgs is None:
         print("workspace")
