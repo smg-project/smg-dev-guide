@@ -239,7 +239,8 @@ fi
 
 # 10. lanes ------------------------------------------------------------------------------------
 if want lanes && [ "$dry" = 0 ] && command -v python3 >/dev/null 2>&1; then
-  lanes_out="$(printf '%s\n' "$changed" | xargs -r python3 "$guide/scripts/lanes.py" 2>/dev/null | tail -3 | tr '\n' ' ')"
+  # the paths go in on stdin, one per line (`-`): xargs would read a quote character in a path as shell quoting
+  lanes_out="$([ -n "$changed" ] && printf '%s\n' "$changed" | python3 "$guide/scripts/lanes.py" - 2>/dev/null | tail -3 | tr '\n' ' ')"
   [ -n "$lanes_out" ] && record lanes INFO "$lanes_out"
 fi
 

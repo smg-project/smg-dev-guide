@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Which SMG areas, review checklists, recipes and CI lanes a set of changed files touches.
 
-Reads data/subsystems.json. Files come from the command line; with none, the script runs
-`git diff --name-only <merge-base of origin/main> HEAD` plus the working tree inside the SMG
-checkout found from the cwd (or --smg). Used by gate.sh for its lanes row and by agents to size
-a change before they start.
+Reads data/subsystems.json. Files come from the command line, from stdin with `-` (one path per
+line, as gate.sh passes them), or (with neither) from `git diff --name-only <merge-base of
+origin/main> HEAD` plus the working tree inside the SMG checkout found from the cwd (or --smg).
+Used by gate.sh for its lanes row and by agents to size a change before they start.
 
-  lanes.py [--smg PATH] [--format text|json] [FILES...]
+  lanes.py [--smg PATH] [--format text|json] [FILES... | -]
 """
 from __future__ import annotations
 
@@ -59,14 +59,16 @@ def matches(path: str, prefix: str) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("files", nargs="*")
+    ap.add_argument("files", nargs="*", help="changed paths relative to the checkout root; '-' reads them from stdin")
     ap.add_argument("--smg")
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--format", choices=("text", "json"), default="text")
     args = ap.parse_args()
     data = json.loads((ROOT / "data" / "subsystems.json").read_text())
     files = args.files
-    if not files:
+    if files == ["-"]:
+        files = [line.strip() for line in sys.stdin if line.strip()]
+    elif not files:
         smg = Path(args.smg) if args.smg else find_smg(Path.cwd())
         if not smg:
             print("lanes.py: no files given and no SMG checkout found", file=sys.stderr)
