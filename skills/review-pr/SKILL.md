@@ -76,7 +76,7 @@ Files under none of these paths get sections 7–9 only. A PR touching three or 
 
 ## 9. Code quality and craft (always)
 
-- Conventional subject, DCO trailer matching git config, no Claude/anthropic attribution trailer (CI rejects all three).
+- Conventional subject, DCO trailer matching the commit's author, no Claude/anthropic attribution trailer (CI rejects all three).
 - `#[expect(lint, reason = "...")]` not `#[allow]`; `tracing` not `println!`; `Uuid::now_v7`; HTTP clients from the crate's client factory, never `reqwest::Client::new`; `tokio::spawn` only for tasks that may die at shutdown, justified at the call site.
 - Vocabulary: sides, role, pool; never "leg" or a dispatch "arm" (`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/check_vocabulary.py" --diff` over the diff).
 - The craft questions in `skills/craft/SKILL.md`: clones on the hot path, bounds on new buffers and maps, a second spelling of something already spelled once, a flag without its launcher and Helm parity.
