@@ -20,9 +20,10 @@ model_gateway/src/core/          # map: this directory was removed
 default-run                      # observability/scheduler: the package declares NO default-run (two bins)
 middleware-on-error              # wasm-plugin: the WIT world has no such interface yet
 
-# --- flags of this guide's own scripts (gate.sh, check_anchors.py, upstream_digest.sh), not SMG flags ---
+# --- flags of this guide's own scripts (gate.sh, crate_scope.py, check_anchors.py, upstream_digest.sh), not SMG flags ---
 skip-tests
 dry-run
+scope
 paths-only
 no-fail
 include-fenced

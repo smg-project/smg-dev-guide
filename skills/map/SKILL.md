@@ -67,7 +67,7 @@ If the command shows instead of its output, run `scripts/map_live.sh <any dir in
 
 ## Commands
 
-`cargo +nightly fmt --all` · `cargo clippy --workspace --all-targets --all-features -- -D warnings` (drop `--all-features` without system OpenCV) · `cargo test -p <package>` · `make python-dev` after config, protocol or binding changes · `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh"` for the whole pre-PR gate.
+`cargo +nightly fmt --all` · `cargo clippy -p <package> --all-targets --all-features -- -D warnings` (the crates you touched; drop `--all-features` without system OpenCV; CI lints the whole workspace) · `cargo test -p <package>` · `make python-dev` after config, protocol or binding changes · `bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh"` for the whole pre-PR gate, scoped the same way.
 
 ## Next
 
