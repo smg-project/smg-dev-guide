@@ -88,6 +88,6 @@ Run `smg:contribute`.
 ## Rules
 
 - The Go SDK (`bindings/golang/`) carries no `RouterConfig` surface; skip it.
-- Deprecated flags are kept and tested rather than deleted (the `--kv-indexer-*` test in `main.rs`); retire a flag by alias, not by removal.
+- A rename keeps the field's name and adds the new spelling as a `visible_alias` (step 3; `--cache-match-threshold` beside `--cache-threshold`). A removed flag goes outright, with a test that a launch line still carrying it is refused at parse time as an unknown argument, not accepted and ignored (`removed_kv_index_flags_are_refused_at_parse_time` in `main.rs`: `--kv-index`, `--kv-indexer-ttl-secs` and `--kv-indexer-max-entries`). A setting that does nothing beside another is a start-up warning, not a refusal (`dp_minimum_tokens_scheduler_scope_warning` in `config/validation.rs`, logged by `server::startup`).
 - Parse at the boundary, store typed; a `String` re-parsed on every request is a smell.
 - `--help` is grouped by `help_heading`; a flag without one lands in the unsorted tail.
