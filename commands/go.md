@@ -12,6 +12,7 @@ Pick the one skill that matches and invoke it with the request:
 - A PR number/URL, "review this", diff analysis → `smg:review-pr`
 - Commit, push, PR readiness, "am I ready to submit", quality gate → `smg:contribute`
 - Naming, wording, performance discipline, interface design, duplication, "how do we do X here" → `smg:craft`
+- Release notes, a release announcement, the release-note sentence of a PR → `smg:craft` (its `release-notes.md`)
 - The guide itself was wrong (stale path, missing step, unpredicted CI failure) → `smg:learn`
 - Resync this guide against SMG HEAD (maintainers) → `smg:sync`
 

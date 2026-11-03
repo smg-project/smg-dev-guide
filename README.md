@@ -8,7 +8,7 @@ Works with **Claude Code** (as a plugin, with hooks and subagents), and with **C
 |---|---|---|
 | `smg:map` | orient: a **live** crate map read from the checkout, the seven invariants, the area table (path → recipe → review checklist) | 60 lines + the live map |
 | `smg:implement` | build: a detection table routes to one of **27 recipes**; every step has a file, a verify command and the silent trap; exemplar commits show the full file set a real change touched | 60 lines + a recipe (~100) |
-| `smg:craft` | write it the way the maintainers do: vocabulary (sides, role, pool), performance discipline, interface design, structure; four evidence-backed references | 50 lines |
+| `smg:craft` | write it the way the maintainers do: vocabulary (sides, role, pool), performance discipline, interface design, structure, release notes and announcements; five evidence-backed references | 50 lines |
 | `smg:review-pr` | review: changed files map to per-subsystem checklists (with anti-patterns); error handling, testing and craft always apply; REVIEW.md markers with `file:line` | 70 lines + matched checklists |
 | `smg:contribute` | ship: the whole pre-PR gate as **one command** (`scripts/gate.sh`) that also prints the CI lanes a diff triggers and checks vocabulary | 55 lines |
 | `smg:learn` | record a lesson (stale path, missing step, unpredicted CI failure) as an issue the next sync promotes | |
@@ -114,7 +114,7 @@ One shape for all: front matter (`verified`, `level`, `watch`, `exemplars`), a f
 ## Repository layout
 
 ```
-skills/                    map (+reference.md) · implement (+recipes/) · craft (+writing, performance, interface, structure)
+skills/                    map (+reference.md) · implement (+recipes/) · craft (+writing, performance, interface, structure, release-notes)
                            review-pr (+checklists/) · contribute · sync · learn
 data/                      subsystems.json · rules.json · vocabulary.json
 scripts/                   gate.sh · map_live.sh · lanes.py · check_anchors.py · check_coverage.py · check_vocabulary.py
