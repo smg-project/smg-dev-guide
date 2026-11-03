@@ -1,11 +1,11 @@
 # Release notes and announcements in SMG
 
 How SMG writes a release page and its announcement: the section skeleton the release tool renders, the writing rules the v1.14.0 page followed once its first draft was sent back as hard to read, the constraints, the Slack form, and how a draft is produced and checked.
-Evidence: the published v1.13.0 and v1.14.0 pages (github.com/smg-project/smg/releases), the two drafts of the v1.14.0 page (every change between them is a rule below), `scripts/release/README.md` ("Writing the notes") and the `release-notes` target of the `Makefile` at SMG `176ce3ae`. The rewrite kept the nine sections and every fact of Upgrade notes and took the authored part from 9,662 words to 3,857, 275 semicolons to 7, 134 parentheses to 59, 160 bold spans to 49.
+Evidence: the published v1.13.0 and v1.14.0 pages (github.com/smg-project/smg/releases), the two drafts of the v1.14.0 page (every change between them is a rule below), `scripts/release/README.md` and the `release-notes` target of the `Makefile` at SMG `176ce3ae`; the template, the renderer and the check that seed and verify the draft arrive with the SMG release-notes template change after that pin, and the page says so where it names them. The rewrite kept the nine sections and every fact of Upgrade notes and took the authored part from 9,662 words to 3,857, 275 semicolons to 7, 134 parentheses to 59, 160 bold spans to 49.
 
 ## The skeleton
 
-One Markdown file, these sections in this order and no others. `scripts/release/NOTES-TEMPLATE.md` carries the same names; `make release-notes` renders it (see [How the notes are produced](#how-the-notes-are-produced)). <!-- anchor-ignore -->
+One Markdown file, these sections in this order and no others. The release tool's template, `scripts/release/NOTES-TEMPLATE.md`, carries the same names and `make release-notes` renders it; the template arrives with the SMG release-notes template change, after `176ce3ae` (see [How the notes are produced](#how-the-notes-are-produced)). <!-- anchor-ignore -->
 
 1. The title line "# Shepherd Model Gateway vX.Y.Z". The GitHub release title is "vX.Y.Z" and nothing else.
 2. The intro, three sentences: the three headline changes; one performance sentence with its baseline ("up to 3.3× the request rate of v1.13.0 within the same latency target"); the commit and contributor counts, the first-time contributors among them, and the pointer to Before you upgrade.
@@ -42,7 +42,7 @@ Each rule is one change between the first draft of the v1.14.0 page ("before") a
 ## Constraints
 
 - GitHub refuses a release body over 125,000 characters. The first v1.14.0 draft was 122,019 characters with its lists; the published page 90,459. The generated Maintenance list folds into one count line with the compare link, which keeps the page under the cap for a cycle of 1,000 commits.
-- The release title is "vX.Y.Z" and nothing else; the page's own title line is "# Shepherd Model Gateway vX.Y.Z".
+- The release title is "vX.Y.Z" and nothing else (the release owner's rule; the v1.14.0 title was corrected from "SMG v1.14.0"); the page's own title line is "# Shepherd Model Gateway vX.Y.Z". The `gh release create` line that `release.sh notes` prints still carries `--title 'SMG vX.Y.Z'` at `176ce3ae` and on main: replace the title before running it until the tool follows.
 - Another vendor's router is never named: "another open-source router with KV-aware routing", "the engine's own HTTP server".
 - No hardware, host, cluster or internal names: "on the same hosts", "eight engines at tensor parallel 4", "a two-node pair". Engine and model family names with their versions are fine (vLLM 0.31.0, SGLang 0.5.21, TensorRT-LLM 1.3.0rc24, GLM 5.3 Flash, DeepSeek V4 Flash).
 - The private tracker and its issue numbers never appear; a defect is described in words (the same rule as for PR text).
@@ -57,7 +57,7 @@ The Slack post is the page's first screen, in five to seven bullets, for a reade
 <the release link>
 
 *What's new*
-• five to seven bullets: a bold lead, one sentence, the number beside its baseline
+• five to seven bullets, one change each: a bold lead, one to three short sentences, every number beside its baseline; the last bullet may gather the smaller items without a lead
 
 *Before you upgrade*
 • three to five bullets, each an action
@@ -91,8 +91,8 @@ https://github.com/smg-project/smg/releases/tag/v1.14.0
 
 ## How the notes are produced
 
-`make release-notes VERSION=X.Y.Z > notes.md` renders `scripts/release/NOTES-TEMPLATE.md` through `scripts/release/notes.py`: the sections above in order, seeded with every merged pull request's release-note sentence (the "## Release note" section of its body, or a "Release note:" line) under the area of its subject's scope, features and performance changes under Highlights, fixes under Notable fixes, declared breaking changes, removed flags and changed defaults under Upgrade notes, the packages and images at the tag under Packages, and the list by type under What's Changed. <!-- anchor-ignore -->
-What only the author knows (the intro, Before you upgrade, every narrative, the validation, Known limits) stays as `<!-- AUTHOR: ... -->` markers that say what goes there; the author replaces them by the rules above. `scripts/release/release.sh notes --check notes.md` refuses a draft that still carries a marker or a template token, and runs before the tag and before `gh release create`. A pull request's sentence is written to be pasted as it stands, which is why the contribute skill asks for one on every PR (`none`, with the reason, when a user sees no change). The flow, from `scripts/release/README.md`: draft at the first candidate, write during the cycle as candidates land, render again before the final and diff the candidate lists, the release manager reviews before the tag, the check passes before publication.
+At `176ce3ae`, `make release-notes VERSION=X.Y.Z > notes.md` prints the merged pull requests since the previous final by type and the image list, and the author writes every other section by the skeleton above. The SMG release-notes template change (after the pin) makes the same command render `scripts/release/NOTES-TEMPLATE.md` through `scripts/release/notes.py`: the sections above in order, seeded with every merged pull request's release-note sentence (the "## Release note" section of its body, or a "Release note:" line) under the area of its subject's scope, features and performance changes under Highlights, fixes under Notable fixes, declared breaking changes, removed flags and changed defaults under Upgrade notes, the packages and images at the tag under Packages, and the list by type under What's Changed. <!-- anchor-ignore -->
+With that change, what only the author knows (the intro, Before you upgrade, every narrative, the validation, Known limits) stays as `<!-- AUTHOR: ... -->` markers that say what goes there; the author replaces them by the rules above. `scripts/release/release.sh notes --check notes.md` refuses a draft that still carries a marker or a template token, and runs before the tag and before `gh release create`. A pull request's sentence is written to be pasted as it stands, which is why the contribute skill asks for one on every PR (`none`, with the reason, when a user sees no change). The flow, from `scripts/release/README.md`: draft at the first candidate, write during the cycle as candidates land, render again before the final and diff the candidate lists, the release manager reviews before the tag, the check passes before publication.
 
 ## Review questions
 
