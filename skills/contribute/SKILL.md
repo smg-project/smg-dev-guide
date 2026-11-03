@@ -19,6 +19,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/gate.sh" --dry-run                # print th
 
 The last run before a push is a plain `gate.sh`. It prints one row per step (`fmt`, `clippy`, `test`, `hooks`, `python`, `go`, `lock`, `vocab`, `names`, `lanes`): **PASS**, **FAIL** (fix and re-run), **WARN** (generated-sounding wording or a missing `Cargo.lock` change: reword or stage), **SKIP** (a tool you lack; CI runs that lane, so say so in the PR), **INFO** (the PR-title regex, the lanes this diff triggers). The steps mirror `CONTRIBUTING.md` ("The pre-PR gate") and `.github/workflows/pr-test-rust.yml`; without the script, run that section's commands by hand in the same order. Paste the table under the PR's `## Test Plan`.
 
+The `python` row's harness unit tests (`python3 -m pytest -q --noconftest e2e_test/infra e2e_test/fixtures`) run in the `python3` on `PATH`, the interpreter the row's two checks read before pytest. The harness's dependency set: without `bash scripts/ci_install_e2e_deps.sh` (`pip install e2e_test/ clients/python/`) every module errors at import, so the row is a SKIP naming that command. The gateway's Python package: a test file that imports `smg.serve` fails without the built extension (`make python-dev`), so the gate leaves such files out of the collection with a WARN naming them, and the row judges the harness and not the host; an import failure of any other kind is a FAIL with the error's text. CI's `python-unit-tests` job has both. An interpreter whose loader cannot find the system libssl builds the extension with `(cd bindings/python && maturin develop --features vendored-openssl)`, the feature `make python-build` uses.
+
 ## Rules SMG's CI enforces
 
 <!-- render:rules -->
