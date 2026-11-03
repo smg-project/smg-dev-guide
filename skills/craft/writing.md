@@ -56,6 +56,7 @@ Spelling is checked by codespell with a short allow list; a token cut on purpose
   - a6c0a175 `test(gateway): the two Kubernetes watchers' tests share one labelled-pod fixture`
 - Bodies: 2,049 of 2,050 commits have none; after the subject come `Signed-off-by` and `Co-authored-by` trailers only. The one body (897ef9a9) explains an enablement change and a review exception. The why lives in the PR body; the body shown in code-style.md:486-493 is the format's example, not the practice.
 - Wording commits record rejected phrasing: "says media references, not multimodal requests" (1f24344b); "refused by name, not as an overflow" (6c8004b0); "name private items as code, not as links" (5be8993a, a34dc35f, 143bac0c, 4bc1780e); the series that "say side, role and pool where they said leg" (5eea9545 to 9bdb2c44).
+- A perf subject carries its number beside the baseline ("25.9 to 17.7 ns per token", "0.37M instructions, down from 2.04M"), never a bare ratio; a subject names a flag once. The release page quotes such subjects as they stand (`release-notes.md`, rules 3 and 4).
 
 ## Pull requests
 
@@ -66,6 +67,8 @@ Spelling is checked by codespell with a short allow list; a token cut on purpose
 - Branch `<type>/<desc>` or `<username>/<desc>`, lowercase, checked at push and by CI (.pre-commit-config.yaml:77-91; `.github/workflows/pr-naming-check.yml`:28).
 - Merge needs two approvals including a code owner, every thread resolved, and the checks `finish`, `DCO` and `PR Title & Commit Messages`; a non-draft PR idle for 14 days is labelled stale (smg-docs contributing/index.md:158-167).
 - Review comments: each inline comment opens with a REVIEW.md severity marker (Important, Nit, Pre-existing) and cites file:line; the summary counts findings per severity; a reply names the commit SHA and a one-line reason (`REVIEW.md`:14-26; `CONTRIBUTING.md`:110-112, 130-132).
+- A `## Release note` section after the Test Plan: one sentence on what a user gets, written to be pasted into the release page as it stands, or `none` with the reason ("none: a test-only change"). The release tool reads it from every merged PR (`scripts/release/README.md`, "Writing the notes"); 662 of the 1,063 PRs of v1.14.0 carried one, and the 105 without one cost the author a sentence each.
+- The body reads as the release page will: one idea per bullet, no semicolon chains, at most one parenthesis per bullet, a number beside its baseline, a measure defined in one sentence before its table with a column header that says what is measured ("Max req/s at TTFT p99 < 1 s", not "Capacity at the objective"). The before/after pairs are in `release-notes.md`.
 
 ## Doc comments
 
@@ -77,6 +80,7 @@ Spelling is checked by codespell with a short allow list; a token cut on purpose
 - Public items are linked, [`Event`]; private items are written as code spans, because `RUSTDOCFLAGS='-D warnings' cargo doc --workspace` runs in CI (`scripts/ci_rust_tests.sh`:220-222; 5be8993a, 9d4c792a).
 - A `///` is a sentence saying what the item is and the invariant it keeps: "Only the first of [`Self::settle_success`], [`Self::close_reserved_only`], or `Self::abandon_if_open` takes effect; later calls are no-ops" (`model_gateway/src/rate_limit/reservation.rs`:24-28). `# Arguments` (44) and `# Returns` (21) sections are the older form, in 26 files among 67,623 `///` lines (code-style.md:287-298).
 - Inline comments say why, not what (code-style.md:300-316); a silenced lint carries `reason = "..."` (code-style.md:74-86; `clippy.toml`:7-15).
+- One idea per sentence: a header sentence that chains four clauses with semicolons is four sentences or a list, a second parenthesis is a sentence of its own, and a number comes with its baseline ("39 ms on eight threads instead of 251 ms"). The same rules took the v1.14.0 release page from 275 semicolons to 7 (`release-notes.md`).
 
 ## Tests
 
@@ -107,3 +111,4 @@ Spelling is checked by codespell with a short allow list; a token cut on purpose
 4. Does a new module's `//!` say in its first line what it is and then why it exists, with private items as code spans and no header a generic module could carry?
 5. Does each test name state the behaviour and its condition, and does each assertion message state the expectation?
 6. Does each review reply say what changed and where, or only "Fixed!"?
+7. Does the PR body carry a `## Release note` sentence a release author can paste as it stands (or `none` with the reason), with its number beside the baseline and each flag named once?
