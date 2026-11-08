@@ -161,9 +161,33 @@ if want python; then
       run python "mypy e2e_test/" mypy e2e_test/ --config-file mypy.ini
       run python "mypy bindings/python/" mypy bindings/python/ --config-file mypy.ini
     else skip python "mypy not installed (pip install mypy)"; fi
-    if need pytest; then
-      PYTHONPATH=e2e_test run python "e2e harness unit tests (CPU gate)" pytest -q --noconftest e2e_test/infra e2e_test/fixtures
-    else skip python "pytest not installed"; fi
+    if ! python3 -c 'import pytest' >/dev/null 2>&1; then skip python "pytest not installed in python3 (python3 -m pip install pytest)"
+    elif ! python3 -c 'import importlib.metadata as m; m.distribution("smg-e2e-tests")' >/dev/null 2>&1; then
+      skip python "e2e harness not installed in this Python, every module would error at import: install it into the python3 this gate runs (bash scripts/ci_install_e2e_deps.sh activates .venv when the repository has one, so activate it before the gate, or python3 -m pip install e2e_test/ clients/python/ here), then re-run; CI's python-unit-tests job runs the harness unit tests"
+    else
+      # A test file that imports the gateway's Python package (smg.serve: the zmq handshake port, the
+      # launchers) fails on a host without the built extension, for the host's reason and not the
+      # change's: leave those files out of the collection (--ignore reads a path, where --deselect
+      # reads a node id relative to pytest's rootdir, e2e_test/ here) and say so, so the row judges the harness.
+      # The probe runs in the environment the pytest line below runs in; the host's case is the package
+      # or its compiled module (smg.smg_rs) missing, nothing else.
+      harness_args=(); import_err=""
+      if import_err="$(PYTHONPATH=e2e_test python3 -c 'import smg.serve' 2>&1)"; then import_err=""; else import_err="${import_err##*$'\n'}"; fi
+      if [[ "$import_err" == "ModuleNotFoundError: No module named 'smg'" || "$import_err" == "ModuleNotFoundError: No module named 'smg.smg_rs'" ]]; then
+        binding_tests="$(grep -rlE '^[[:space:]]*(from|import) smg\b' --include='test_*.py' --include='*_test.py' e2e_test/infra e2e_test/fixtures 2>/dev/null | sort | tr '\n' ' ')"
+        binding_tests="${binding_tests% }"
+        # shellcheck disable=SC2086
+        for f in $binding_tests; do harness_args+=("--ignore=$f"); done
+        record python WARN "smg extension not importable here: ${binding_tests:-no test file} left out (make python-dev, then re-run for the whole row; CI's python-unit-tests job has the wheel)"
+      elif [ -n "$import_err" ]; then
+        # Any other failure is the package's, not the host's (a library the build linked against, a syntax
+        # error, a source module of the package missing from a broken installation).
+        # The row is red with the error's own text; the suite still runs with nothing left out, so the test
+        # that imports the package shows the same cause.
+        record python FAIL "import smg.serve failed for a reason other than the missing extension: $import_err"
+      fi
+      PYTHONPATH=e2e_test run python "e2e harness unit tests (CPU gate)" python3 -m pytest -q --noconftest ${harness_args[@]+"${harness_args[@]}"} e2e_test/infra e2e_test/fixtures
+    fi
     if touched '^(model_gateway/src/config/|crates/protocols/|bindings/python/)'; then
       if need maturin; then
         run python "make python-dev (rebuild the wheel: a new config field must reach Router/router_args.py)" make python-dev
