@@ -1,11 +1,11 @@
 ---
 name: craft
-description: How SMG code is written, so a change reads like the maintainers wrote it. Use before writing non-trivial code, naming things, designing a flag, metric, endpoint or error, touching a hot path, writing a commit message, PR text or doc comment, or when reviewing for cloning, bounds, duplication and wording. Points to the evidence-backed references on writing, performance, interfaces and structure.
+description: How SMG code is written, so a change reads like the maintainers wrote it. Use before writing non-trivial code, naming things, designing a flag, metric, endpoint or error, touching a hot path, writing a commit message, PR text, a release-note sentence, release notes or an announcement, or a doc comment, or when reviewing for cloning, bounds, duplication and wording. Points to the evidence-backed references on writing, performance, interfaces, structure and release notes.
 ---
 
 # Craft in SMG
 
-The house style is not taste: each rule below names what breaks when it is skipped. The four references in this directory carry the evidence (paths, lines, commits); read the one your change touches.
+The house style is not taste: each rule below names what breaks when it is skipped. The five references in this directory carry the evidence (paths, lines, commits); read the one your change touches.
 
 ## Non-negotiables (first read)
 
@@ -24,6 +24,7 @@ The house style is not taste: each rule below names what breaks when it is skipp
 | touches request handling, streaming, selection, an index, a cache, a lock | `performance.md` |
 | adds or changes a flag, config field, metric, log line, error response, health probe, protocol type | `interface.md` |
 | adds a module, a backend, an enum variant, a test, or copies something that exists | `structure.md` |
+| writes the release page, the Slack announcement, or the `## Release note` sentence of a PR | `release-notes.md` |
 
 ## Before you push
 

@@ -47,3 +47,4 @@ Clippy and style rules live upstream: `Cargo.toml [workspace.lints]`, `clippy.to
 - A `Cargo.toml` change ships with its `Cargo.lock` diff (CI starts every Rust job with `cargo metadata --locked`).
 - A new `RouterConfig` field ships with its Python chain (the gate runs the lane whenever config, protocols or bindings changed).
 - Reviewers run `smg:review-pr`; run it on your own diff first, then `smg:craft`'s review questions.
+- The PR body carries a `## Release note` section after the Test Plan: one sentence on what a user gets, written to be pasted into the release page as it stands, or `none` with the reason. The release tool reads it from every merged PR when the notes are drafted; a PR without one costs the release author a sentence (`skills/craft/release-notes.md`).
