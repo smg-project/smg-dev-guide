@@ -26,7 +26,7 @@ The last run before a push is a plain `gate.sh`. It prints one row per step (`fm
 <!-- render:rules -->
 - **Branch**: <type>/<description> or <username>/<description>; regex `^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(/[a-zA-Z0-9._-]+)+$`. Never commit on `main`, `master` (pre-commit `no-commit-to-branch`); CI closes PRs from other branch names.
 - **Commit subject**: `type(scope): summary` with type in `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `ci`, `perf`, `lint`, `style`, `revert`, `build`, lowercase scope.
-- **DCO**: `git commit -s`; the `Signed-off-by` trailer must equal `git config user.name <user.email>` exactly (`scripts/dco-check.sh`). Never `--no-verify`.
+- **DCO**: `git commit -s`; the `Signed-off-by` trailer must equal the commit's author, `name <email>` exactly (`scripts/dco-check.sh` reads the identity the commit is made with, so `git -c user.name=... -c user.email=... commit -s` passes; the DCO check and the gate's `names` row compare the trailer with the author afterwards). Never `--no-verify`.
 - **No AI attribution**: a `Co-authored-by` or `Signed-off-by` line matching `^(Co-authored-by|Signed-off-by):.*(Claude|noreply@anthropic\.com)` fails the `no-ai-co-author` hook and CI.
 - **PR title**: regex `^(feat|fix|chore|docs|refactor|test|ci|perf|lint|style|revert|build)(\([a-z0-9_./-]+\))?!?: .+`.
 - **PR body**: the template headers `## Description`, `### Problem`, `### Solution`, `## Changes`, `## Test Plan`, each filled; the review bot posts the gaps otherwise.
