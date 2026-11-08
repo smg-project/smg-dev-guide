@@ -10,7 +10,7 @@ Works with **Claude Code** (as a plugin, with hooks and subagents), and with **C
 | `smg:implement` | build: a detection table routes to one of **27 recipes**; every step has a file, a verify command and the silent trap; exemplar commits show the full file set a real change touched | 60 lines + a recipe (~100) |
 | `smg:craft` | write it the way the maintainers do: vocabulary (sides, role, pool), performance discipline, interface design, structure; four evidence-backed references | 50 lines |
 | `smg:review-pr` | review: changed files map to per-subsystem checklists (with anti-patterns); error handling, testing and craft always apply; REVIEW.md markers with `file:line` | 70 lines + matched checklists |
-| `smg:contribute` | ship: the whole pre-PR gate as **one command** (`scripts/gate.sh`) that also prints the CI lanes a diff triggers and checks vocabulary | 55 lines |
+| `smg:contribute` | ship: the whole pre-PR gate as **one command** (`scripts/gate.sh`), clippy and tests scoped to the crates the diff touches, that also prints the CI lanes a diff triggers and checks vocabulary | 55 lines |
 | `smg:learn` | record a lesson (stale path, missing step, unpredicted CI failure) as an issue the next sync promotes | |
 | `smg:sync` | maintainers: resync the guide against SMG HEAD (drift, coverage, digest, lessons → PR) | |
 
@@ -93,7 +93,8 @@ One shape for all: front matter (`verified`, `level`, `watch`, `exemplars`), a f
 
 | Script | Use |
 |---|---|
-| `scripts/gate.sh [--fix] [--skip-tests] [--only ...] [--dry-run]` | the pre-PR gate: fmt, clippy, tests, pre-commit, Python/Go lanes, `Cargo.lock`, vocabulary, branch/commit rules, lanes; PASS/FAIL table |
+| `scripts/gate.sh [--fix] [--skip-tests] [--only ...] [--scope changed\|workspace] [--dry-run]` | the pre-PR gate: fmt, clippy and tests on the crates the diff touches (`--scope workspace` for every crate: the clippy run CI's `rust-lint` makes, and the whole test matrix, which main runs; a pull request's CI runs the test shards its paths can affect), pre-commit, Python/Go lanes, `Cargo.lock`, vocabulary, branch/commit rules, lanes; PASS/FAIL table |
+| `scripts/crate_scope.py [files]` | the workspace packages a diff touches (one `-p` per crate; `workspace` when a workspace-level file changed), as the gate scopes clippy and tests; `scripts/tests/crate_scope_test.sh` is its fixture test (runs in CI) |
 | `scripts/map_live.sh [dir]` | live crate map, gateway layout, policies, parser counts, CI lanes |
 | `scripts/lanes.py [files]` | which areas, recipes, review checklists and CI lanes a diff touches |
 | `scripts/check_anchors.py --smg <path>` | drift detector (paths, symbols, flags, lanes) |
@@ -117,8 +118,8 @@ One shape for all: front matter (`verified`, `level`, `watch`, `exemplars`), a f
 skills/                    map (+reference.md) · implement (+recipes/) · craft (+writing, performance, interface, structure)
                            review-pr (+checklists/) · contribute · sync · learn
 data/                      subsystems.json · rules.json · vocabulary.json
-scripts/                   gate.sh · map_live.sh · lanes.py · check_anchors.py · check_coverage.py · check_vocabulary.py
-                           upstream_digest.sh · render.py · lint_guide.py · rules.py · lib/ · hooks/
+scripts/                   gate.sh · crate_scope.py · map_live.sh · lanes.py · check_anchors.py · check_coverage.py · check_vocabulary.py
+                           upstream_digest.sh · render.py · lint_guide.py · rules.py · lib/ · hooks/ · tests/
 hooks/hooks.json           SessionStart banner · PreToolUse git guard
 agents/                    smg-reviewer · smg-scout
 commands/go.md             /smg:go router
